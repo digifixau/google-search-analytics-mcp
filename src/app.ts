@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import { GoogleAuthManager } from './google/auth.js';
+import { GoogleConnections } from './google/auth.js';
 import { createGoogleApisProvider, type GoogleApisProvider } from './google/clients.js';
 import { Encryptor } from './store/crypto.js';
 import { AuditLog, KvStore, openDb, type Db } from './store/db.js';
@@ -10,8 +10,10 @@ export interface AppContext {
   db: Db;
   kv: KvStore;
   encryptor?: Encryptor;
-  googleAuth: GoogleAuthManager;
-  apis: GoogleApisProvider;
+  /** One independent Google connection per MCP. */
+  google: GoogleConnections;
+  /** Google API clients authenticated with one MCP's own connection. */
+  apisFor: (connectionId: string) => GoogleApisProvider;
   policy: AccessPolicy;
   audit: AuditLog;
 }
@@ -20,14 +22,24 @@ export function createAppContext(config: Config): AppContext {
   const db = openDb(config.dataDir);
   const kv = new KvStore(db);
   const encryptor = config.encryptionKey ? new Encryptor(config.encryptionKey) : undefined;
-  const googleAuth = new GoogleAuthManager(config, kv, encryptor);
+  const google = new GoogleConnections(config, kv, encryptor);
+  google.migrateShared();
+  const providers = new Map<string, GoogleApisProvider>();
   return {
     config,
     db,
     kv,
     encryptor,
-    googleAuth,
-    apis: createGoogleApisProvider(() => googleAuth.getClient()),
+    google,
+    apisFor: (connectionId) => {
+      let provider = providers.get(connectionId);
+      if (!provider) {
+        const connection = google.get(connectionId);
+        provider = createGoogleApisProvider(() => connection.getClient());
+        providers.set(connectionId, provider);
+      }
+      return provider;
+    },
     policy: new AccessPolicy(config),
     audit: new AuditLog(db),
   };

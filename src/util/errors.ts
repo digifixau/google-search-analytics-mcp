@@ -41,7 +41,7 @@ export function describeError(error: unknown): string {
     return 'This Google Cloud project is not registered with the Merchant Center account yet. Run merchant_register_gcp_project once for this account (read-write connection), then retry.';
   }
   if (googleMessage.includes('invalid_grant')) {
-    return 'Google rejected the stored refresh token (revoked or expired). Reconnect Google via /setup (or run `google-auth`).';
+    return "Google rejected this MCP's stored refresh token (revoked or expired). Click Reconnect on this MCP's card on /setup (or run `google-auth --connector <id>`); other MCPs are not affected.";
   }
   switch (status) {
     case 400:

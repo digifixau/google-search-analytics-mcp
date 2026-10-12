@@ -11,7 +11,7 @@ A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotoc
   | YouTube Analytics                 | `/mcp/youtube`  | 10: channel & video analytics, top videos, traffic sources, audience, retention, revenue, video metadata edits                                        |
   | Google Merchant Center            | `/mcp/merchant` | 14: account health, product issues & disapprovals, products, Shopping performance, price competitiveness, promotions, product edits                   |
 
-  All MCPs share one deployment, one Google sign-in, one approval page and one audit log. More can be added later; see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
+  All MCPs share one deployment, one approval page and one audit log, and each has its own Google connection, so every MCP can use a different Google account. More can be added later; see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
 
 - **Remote or local**: a Streamable HTTP endpoint with its own OAuth 2.1 server (works as a custom connector in claude.ai and ChatGPT), or stdio for Claude Desktop and Claude Code.
 - **Your credentials stay on your server**: sign in to Google once (OAuth) or use a service account. Refresh tokens are encrypted at rest with AES-256-GCM.
@@ -84,7 +84,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 2. In **APIs & Services → Credentials → Create credentials → OAuth client ID**, choose **Web application** and add these redirect URIs:
    - `https://YOUR-DOMAIN/oauth/google/callback` (remote server)
    - `http://localhost:53682/oauth/google/callback` (only if you use the local `google-auth` command)
-3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_OWNER_EMAIL` (your Google address; required for remote deployments, so no other Google account can ever be connected).
+3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_OWNER_EMAIL`: the Google account(s) you will connect, comma separated. It's required for remote deployments, so no other Google account can ever be connected. See [One Google account per MCP](#one-google-account-per-mcp) to use a different account for each MCP.
 
 > If the consent screen is in **Testing** status, Google expires refresh tokens after 7 days. Publish the app (internal apps in a Workspace org are fine) to avoid having to reconnect weekly.
 
@@ -92,7 +92,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 
 1. Create a service account and a JSON key.
 2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), **each** GTM container (Read, Edit, or Publish for publishing), and **each** Merchant Center account (Standard access, or Admin for registration). YouTube does **not** support service accounts, so use OAuth mode for YouTube, or turn it off with `ENABLED_SERVICES`.
-3. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON, a file path, or base64).
+3. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON, a file path, or base64). To use a different service account for one MCP, set `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>` (e.g. `GOOGLE_SERVICE_ACCOUNT_JSON_MERCHANT`).
 
 ---
 
@@ -114,9 +114,20 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
    GOOGLE_OWNER_EMAIL=you@example.com
    ```
 5. Deploy. The image has a built-in health check on `/healthz`.
-6. Open **`https://mcp.example.com/setup`**, sign in with `ADMIN_PASSWORD`, and click **Connect Google**.
+6. Open **`https://mcp.example.com/setup`**, sign in with `ADMIN_PASSWORD`, and click **Connect** on each MCP card (Search Console & Analytics, Tag Manager, YouTube, Merchant Center).
 
-If you change `ACCESS_MODE` or `WRITE_TOOLSETS` later, click **Reconnect Google** on `/setup` so Google grants the new scopes. The page warns you when scopes are missing.
+If you change `ACCESS_MODE` or `WRITE_TOOLSETS` later, click **Reconnect** on the affected cards so Google grants the new scopes. Each card warns you when its scopes are missing.
+
+### One Google account per MCP
+
+Each MCP has its **own Google connection**: its own account, refresh token, scopes, status, and Connect / Reconnect / Disconnect buttons on `/setup`. For example, Search Console & Analytics can use `seo@agency.com`, Tag Manager `tags@client.com`, YouTube a Brand Account, and Merchant Center `shop@client.com`.
+
+- **Who may be connected.** `GOOGLE_OWNER_EMAIL` lists the accounts allowed on every MCP, comma separated. To pin one MCP to specific accounts, set `GOOGLE_OWNER_EMAIL_<MCP>`. The suffixes are `SEARCH_ANALYTICS`, `GTM`, `YOUTUBE` and `MERCHANT`. An override replaces the shared list for that MCP. Every enabled MCP must end up with at least one allowed account, or the server won't start.
+- **Isolation.** An MCP's tools only ever use that MCP's credentials. Refreshing, reconnecting or disconnecting one MCP never touches another, even when two MCPs use the same Google account. Consent is requested with `include_granted_scopes=false`, so a connection holds only its own scopes.
+- **Scopes per MCP.** Each card asks Google only for that MCP's scopes. Tag Manager also asks for `analytics.readonly`, so `gtm_audit_container` can cross-check GA4 measurement IDs with the Tag Manager account. Without GA4 access, the audit simply skips that check.
+- **Disconnect** deletes the stored token for that MCP only. It does **not** revoke the grant at Google, because revoking would also cut off every other MCP connected with the same account. To revoke fully, remove the app at <https://myaccount.google.com/permissions>. That affects every MCP connected with that account.
+- **Upgrading from a single shared connection.** On first start after the upgrade, the existing connection is **copied** to every MCP. (MCPs you pinned with `GOOGLE_OWNER_EMAIL_<MCP>` to other accounts are skipped.) Nothing is lost, and each card says "Using the shared Google connection from before the upgrade". Reconnect any card to move it to another account. The original record is never modified, so rolling back to the previous image keeps working. See the [deploy guide](docs/DEPLOY.md#upgrading-to-one-google-account-per-mcp).
+- **Local / stdio.** `node dist/index.js google-auth --connector gtm` connects one MCP (the default is `search-analytics`).
 
 Any other Docker host works the same way: `cp .env.example .env`, edit it, then run `docker compose up -d` behind a TLS reverse proxy.
 
@@ -160,7 +171,7 @@ claude mcp add --transport http google-search-analytics https://mcp.example.com/
 ```bash
 npm ci && npm run build
 GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... ENCRYPTION_KEY=... DATA_DIR=~/.gsa-mcp \
-  node dist/index.js google-auth      # one-time Google sign-in
+  node dist/index.js google-auth      # one-time Google sign-in (add --connector gtm|youtube|merchant for the others)
 ```
 
 `claude_desktop_config.json`:
@@ -195,30 +206,32 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 
 ## Configuration reference
 
-| Variable                                                        | Default                      | Description                                                                                                                      |
-| --------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `TRANSPORT`                                                     | `stdio` (`http` in Docker)   | `http` or `stdio`                                                                                                                |
-| `PUBLIC_URL`                                                    | –                            | Required for `http`. Must be https, except for localhost.                                                                        |
-| `PORT` / `HOST`                                                 | `3000` / `0.0.0.0`           | Listen address                                                                                                                   |
-| `DATA_DIR`                                                      | `./data` (`/data` in Docker) | SQLite database location                                                                                                         |
-| `ACCESS_MODE`                                                   | `readonly`                   | `readonly` or `readwrite`                                                                                                        |
-| `WRITE_TOOLSETS`                                                | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`, `youtube`, `merchant`               |
-| `ENABLED_SERVICES`                                              | all                          | Which products to expose: `gsc`, `ga4`, `gtm`, `youtube`, `merchant`. Disabled products get no MCP endpoint and no Google scopes |
-| `ADMIN_PASSWORD`                                                | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                                              |
-| `ENCRYPTION_KEY`                                                | –                            | Required in oauth mode, at least 32 chars                                                                                        |
-| `MCP_API_KEYS`                                                  | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                                                   |
-| `ACCESS_TOKEN_TTL_SECONDS`                                      | `3600`                       | OAuth access token lifetime                                                                                                      |
-| `REFRESH_TOKEN_TTL_DAYS`                                        | `30`                         | Rotating refresh token lifetime                                                                                                  |
-| `GOOGLE_AUTH_MODE`                                              | `oauth`                      | `oauth` or `service_account`                                                                                                     |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                     | –                            | OAuth client (oauth mode)                                                                                                        |
-| `GOOGLE_OWNER_EMAIL`                                            | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected                                                |
-| `GOOGLE_SERVICE_ACCOUNT_JSON`                                   | –                            | Key JSON, path, or base64 (service account mode)                                                                                 |
-| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`                  | all                          | Read allowlists                                                                                                                  |
-| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES`      | read lists                   | Write allowlists                                                                                                                 |
-| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`       | all / read list              | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                                               |
-| `ALLOWED_YOUTUBE_CHANNELS` / `WRITE_ALLOWED_YOUTUBE_CHANNELS`   | all / read list              | YouTube channel IDs (`UC…`)                                                                                                      |
-| `ALLOWED_MERCHANT_ACCOUNTS` / `WRITE_ALLOWED_MERCHANT_ACCOUNTS` | all / read list              | Merchant Center account IDs                                                                                                      |
-| `TRUST_PROXY`                                                   | `true`                       | Trust one reverse-proxy hop for client IPs (rate limiting)                                                                       |
+| Variable                                                        | Default                       | Description                                                                                                                      |
+| --------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `TRANSPORT`                                                     | `stdio` (`http` in Docker)    | `http` or `stdio`                                                                                                                |
+| `PUBLIC_URL`                                                    | –                             | Required for `http`. Must be https, except for localhost.                                                                        |
+| `PORT` / `HOST`                                                 | `3000` / `0.0.0.0`            | Listen address                                                                                                                   |
+| `DATA_DIR`                                                      | `./data` (`/data` in Docker)  | SQLite database location                                                                                                         |
+| `ACCESS_MODE`                                                   | `readonly`                    | `readonly` or `readwrite`                                                                                                        |
+| `WRITE_TOOLSETS`                                                | all                           | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`, `youtube`, `merchant`               |
+| `ENABLED_SERVICES`                                              | all                           | Which products to expose: `gsc`, `ga4`, `gtm`, `youtube`, `merchant`. Disabled products get no MCP endpoint and no Google scopes |
+| `ADMIN_PASSWORD`                                                | –                             | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                                              |
+| `ENCRYPTION_KEY`                                                | –                             | Required in oauth mode, at least 32 chars                                                                                        |
+| `MCP_API_KEYS`                                                  | –                             | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                                                   |
+| `ACCESS_TOKEN_TTL_SECONDS`                                      | `3600`                        | OAuth access token lifetime                                                                                                      |
+| `REFRESH_TOKEN_TTL_DAYS`                                        | `30`                          | Rotating refresh token lifetime                                                                                                  |
+| `GOOGLE_AUTH_MODE`                                              | `oauth`                       | `oauth` or `service_account`                                                                                                     |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                     | –                             | OAuth client (oauth mode)                                                                                                        |
+| `GOOGLE_OWNER_EMAIL`                                            | –                             | Required for `http` + oauth. Comma list of the (verified) Google accounts that may be connected to any MCP                       |
+| `GOOGLE_OWNER_EMAIL_<MCP>`                                      | `GOOGLE_OWNER_EMAIL`          | Per-MCP list (`SEARCH_ANALYTICS`, `GTM`, `YOUTUBE`, `MERCHANT`). Replaces the shared list for that MCP                           |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`                                   | –                             | Key JSON, path, or base64 (service account mode)                                                                                 |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>`                             | `GOOGLE_SERVICE_ACCOUNT_JSON` | A different service account for one MCP                                                                                          |
+| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`                  | all                           | Read allowlists                                                                                                                  |
+| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES`      | read lists                    | Write allowlists                                                                                                                 |
+| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`       | all / read list               | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                                               |
+| `ALLOWED_YOUTUBE_CHANNELS` / `WRITE_ALLOWED_YOUTUBE_CHANNELS`   | all / read list               | YouTube channel IDs (`UC…`)                                                                                                      |
+| `ALLOWED_MERCHANT_ACCOUNTS` / `WRITE_ALLOWED_MERCHANT_ACCOUNTS` | all / read list               | Merchant Center account IDs                                                                                                      |
+| `TRUST_PROXY`                                                   | `true`                        | Trust one reverse-proxy hop for client IPs (rate limiting)                                                                       |
 
 ## Security notes
 
@@ -229,7 +242,7 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 | Call any `/mcp…` endpoint directly                | `401`: every request needs a token issued by this server (or a configured API key).                                  |
 | Add it as a connector in their own Claude/ChatGPT | They reach the consent page, but approving needs `ADMIN_PASSWORD`. Without it no token is issued.                    |
 | Open `/setup`                                     | Password prompt; nothing is shown before sign-in.                                                                    |
-| Connect their own Google account                  | Impossible: Google can only be linked from `/setup`, and only the verified `GOOGLE_OWNER_EMAIL` account is accepted. |
+| Connect their own Google account                  | Impossible: Google can only be linked from `/setup`, and only accounts in `GOOGLE_OWNER_EMAIL(_<MCP>)` are accepted. |
 
 **Password protection.** Wrong passwords are rate-limited at 10 per IP per 15 minutes. After 30 failures from any mix of IPs, all password logins lock for 15 minutes; this also locks you out briefly, which is the trade-off for stopping distributed guessing. Counters survive restarts. Lockouts are logged as `[security]` lines in the container logs.
 
@@ -237,7 +250,9 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 
 - Access and refresh tokens are stored only as SHA-256 hashes. Refresh tokens rotate on every use, and a reused refresh token is rejected.
 - Dynamic client registration accepts any `https` redirect URI (or `http` on localhost) and is limited to 20 registrations per hour per IP. Registrations that never get approved are deleted after 24 hours.
-- Review and revoke connected clients on `/setup`. To revoke Google access entirely, use `/setup → Disconnect` and <https://myaccount.google.com/permissions>.
+- Review and revoke connected clients on `/setup`. To revoke Google access entirely, use **Disconnect** on each MCP card and <https://myaccount.google.com/permissions>.
+- Google tokens are encrypted (AES-256-GCM) per MCP and never leave the server: MCP clients only get this server's own tokens, and `/setup` shows just the account email and status.
+- The Google sign-in is bound to the `/setup` session that started it. Its `state` is single use and expires after 10 minutes, and it uses PKCE. The MCP it connects is decided by the server, never by the callback URL.
 - Each MCP endpoint is stateless and validates the `Host` header against `PUBLIC_URL`.
 - Connections are bound to the MCP they were approved for (OAuth `resource`), so a token approved for Tag Manager is refused on `/mcp`, and the reverse. Static API keys work on every MCP.
 - If you suspect the password leaked: change `ADMIN_PASSWORD`, redeploy, and revoke any unknown clients on `/setup`.
@@ -247,7 +262,7 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 Every MCP endpoint is a **connector** in `src/mcp/connectors.ts`. Adding one is mostly additive:
 
 1. **Service and write toolsets.** In `src/config.ts`, add the service to `SERVICES` (e.g. `'youtube'`) and any write toolsets to `WRITE_TOOLSETS`. Map them in `serviceOf()` in `src/tools/registry.ts`.
-2. **Google scopes.** In `requiredGoogleScopes()` in `src/google/auth.ts`, add the scopes for read-only and for each write toolset. Existing deployments will see "Reconnect Google" on `/setup`.
+2. **Google scopes.** In `requiredGoogleScopes()` in `src/google/auth.ts`, add the scopes for read-only and for each write toolset. The new MCP automatically gets its own Google connection and `/setup` card, and `GOOGLE_OWNER_EMAIL_<ID>` works for it.
 3. **API client.** Add the client to `GoogleApis` in `src/google/clients.ts`, e.g. `google.youtubeAnalytics({ version: 'v2' })`.
 4. **Tools.** Write `src/tools/youtube.ts` with `defineTool({ toolset: 'youtube', access: 'read' | 'write', ... })` and register it in `src/tools/index.ts`. Read-only gating, `[WRITE]` labels, confirmations and the audit log apply automatically.
 5. **Connector.** Add an entry to `CONNECTORS`: `{ id: 'youtube', path: '/mcp/youtube', serverName, title, services: ['youtube'], includeCompat: false, instructions }`.

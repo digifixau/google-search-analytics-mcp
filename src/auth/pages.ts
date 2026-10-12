@@ -106,16 +106,24 @@ export function messagePage(title: string, message: string, ok = false): string 
 
 export interface DashboardView {
   csrf: string;
-  endpoints: Array<{ title: string; url: string; tools: string }>;
+  /** One card per MCP, each with its own Google connection. */
+  connections: Array<{
+    url: string;
+    tools: string;
+    google: {
+      connectionId: string;
+      title: string;
+      mode: string;
+      connected: boolean;
+      identity?: string;
+      missingScopes: string[];
+      connectedAt?: string;
+      migratedFromShared?: boolean;
+      allowedEmails: string[];
+    };
+  }>;
   accessMode: string;
   writeToolsets: string[];
-  google: {
-    mode: string;
-    connected: boolean;
-    identity?: string;
-    missingScopes: string[];
-    connectedAt?: string;
-  };
   clients: Array<{
     clientId: string;
     name: string;
@@ -128,16 +136,31 @@ export interface DashboardView {
 }
 
 export function dashboardPage(v: DashboardView): string {
-  const g = v.google;
-  const googleBlock =
-    g.mode === 'service_account'
-      ? `<p>Using service account <code>${escapeHtml(g.identity)}</code>.</p>`
-      : g.connected
-        ? `<p class="ok">Connected as ${escapeHtml(g.identity ?? 'unknown account')}</p><p class="muted">Since ${escapeHtml(g.connectedAt)}</p>
-           ${g.missingScopes.length ? `<p class="err">Missing scopes for ${escapeHtml(v.accessMode)} mode — reconnect:</p><p class="muted">${g.missingScopes.map(escapeHtml).join('<br>')}</p>` : ''}
-           <div class="row"><form method="post" action="/setup/google/connect"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button type="submit">Reconnect Google</button></form>
-           <form method="post" action="/setup/google/disconnect"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button class="danger" type="submit">Disconnect</button></form></div>`
-        : `<p class="err">Not connected.</p><form method="post" action="/setup/google/connect"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button class="primary" type="submit">Connect Google</button></form>`;
+  const button = (action: string, id: string, label: string, cls = '') =>
+    `<form method="post" action="/setup/google/${action}"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><input type="hidden" name="connection" value="${escapeHtml(id)}"><button${cls ? ` class="${cls}"` : ''} type="submit">${label}</button></form>`;
+
+  const connectionCard = (c: DashboardView['connections'][number]) => {
+    const g = c.google;
+    let body: string;
+    if (g.mode === 'service_account') {
+      body = `<p class="ok">Service account <code>${escapeHtml(g.identity)}</code></p>`;
+    } else if (!g.connected) {
+      body = `<p class="err">Not connected</p>
+        ${g.allowedEmails.length ? `<p class="muted">Allowed: ${g.allowedEmails.map(escapeHtml).join(', ')}</p>` : ''}
+        <div class="row">${button('connect', g.connectionId, 'Connect Google', 'primary')}</div>`;
+    } else {
+      const status = g.missingScopes.length
+        ? `<p class="err">Connected as ${escapeHtml(g.identity ?? 'unknown account')}, but missing scopes — reconnect:</p><p class="muted">${g.missingScopes.map(escapeHtml).join('<br>')}</p>`
+        : `<p class="ok">Connected as ${escapeHtml(g.identity ?? 'unknown account')}</p>`;
+      const shared = g.migratedFromShared
+        ? '<p class="muted">Using the shared Google connection from before the upgrade. Reconnect to use a separate account for this MCP.</p>'
+        : `<p class="muted">Since ${escapeHtml(g.connectedAt)}</p>`;
+      body = `${status}${shared}<div class="row">${button('connect', g.connectionId, 'Reconnect')}${button('disconnect', g.connectionId, 'Disconnect', 'danger')}</div>`;
+    }
+    return `<div class="card"><h2>${escapeHtml(g.title)}</h2>
+      <p>MCP URL: <code>${escapeHtml(c.url)}</code> <span class="muted">(${escapeHtml(c.tools)} tools)</span></p>
+      ${body}</div>`;
+  };
 
   const clients = v.clients.length
     ? `<table><tr><th>Client</th><th>MCP</th><th>Scopes</th><th>Last token</th><th></th></tr>${v.clients
@@ -163,16 +186,10 @@ export function dashboardPage(v: DashboardView): string {
     'Server setup',
     `${v.flash ? `<div class="card"><p class="ok">${escapeHtml(v.flash)}</p></div>` : ''}
     <div class="card"><h1>Google Marketing MCP server</h1>
-      <p class="muted">Add each MCP as its own connector in Claude or ChatGPT:</p>
-      <table><tr><th>MCP</th><th>URL</th><th>Tools</th></tr>${v.endpoints
-        .map(
-          (e) =>
-            `<tr><td>${escapeHtml(e.title)}</td><td><code>${escapeHtml(e.url)}</code></td><td>${escapeHtml(e.tools)}</td></tr>`,
-        )
-        .join('')}</table>
+      <p class="muted">Each MCP below has its own Google account. Add each MCP as its own connector in Claude or ChatGPT.</p>
       <p>Access mode: <strong>${escapeHtml(v.accessMode)}</strong>${v.accessMode === 'readwrite' ? ` <span class="muted">(write toolsets: ${v.writeToolsets.map(escapeHtml).join(', ')})</span>` : ''}</p>
       <form method="post" action="/setup/logout"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button type="submit">Sign out</button></form></div>
-    <div class="card"><h2>Google account</h2>${googleBlock}</div>
+    ${v.connections.map(connectionCard).join('')}
     <div class="card"><h2>Connected clients</h2>${clients}</div>
     <div class="card"><h2>Recent write actions</h2>${audit}</div>`,
   );

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CONNECTORS, enabledConnectors } from './mcp/connectors.js';
 
 export const WRITE_TOOLSETS = [
   'gsc',
@@ -104,8 +105,13 @@ export interface Config {
     authMode: 'oauth' | 'service_account';
     clientId?: string;
     clientSecret?: string;
-    ownerEmail?: string;
+    /** Google accounts allowed for every MCP connection (GOOGLE_OWNER_EMAIL, comma separated). */
+    ownerEmails: string[];
+    /** Per-MCP overrides from GOOGLE_OWNER_EMAIL_<MCP>, keyed by connector id. */
+    connectionOwnerEmails: Record<string, string[]>;
     serviceAccountJson?: string;
+    /** Per-MCP overrides from GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>, keyed by connector id. */
+    connectionServiceAccounts: Record<string, string>;
   };
   allowlists: {
     gscSites: string[];
@@ -217,8 +223,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       authMode: e.GOOGLE_AUTH_MODE,
       clientId: e.GOOGLE_CLIENT_ID,
       clientSecret: e.GOOGLE_CLIENT_SECRET,
-      ownerEmail: e.GOOGLE_OWNER_EMAIL?.toLowerCase(),
+      ownerEmails: emailList(e.GOOGLE_OWNER_EMAIL),
+      connectionOwnerEmails: Object.fromEntries(
+        perConnection(env, 'GOOGLE_OWNER_EMAIL_').map(([id, v]) => [id, emailList(v)]),
+      ),
       serviceAccountJson: e.GOOGLE_SERVICE_ACCOUNT_JSON,
+      connectionServiceAccounts: Object.fromEntries(
+        perConnection(env, 'GOOGLE_SERVICE_ACCOUNT_JSON_'),
+      ),
     },
     allowlists: {
       gscSites: e.ALLOWED_GSC_SITES,
@@ -239,7 +251,49 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return config;
 }
 
+function emailList(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** Env var suffix for a connector id: `search-analytics` → `SEARCH_ANALYTICS`. */
+export function connectionEnvSuffix(connectionId: string): string {
+  return connectionId.toUpperCase().replace(/-/g, '_');
+}
+
+/** Collects `<PREFIX><MCP>` env vars as [connectorId, value] pairs. */
+function perConnection(env: NodeJS.ProcessEnv, prefix: string): Array<[string, string]> {
+  return Object.entries(env)
+    .filter(([k, v]) => k.startsWith(prefix) && v && v.trim() !== '')
+    .map(([k, v]) => [k.slice(prefix.length).toLowerCase().replace(/_/g, '-'), v!.trim()]);
+}
+
+/** Google accounts allowed to be connected to one MCP: its override, else GOOGLE_OWNER_EMAIL. */
+export function allowedEmailsFor(config: Config, connectionId: string): string[] {
+  return config.google.connectionOwnerEmails[connectionId] ?? config.google.ownerEmails;
+}
+
+/** Service account key for one MCP: GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>, else the shared one. */
+export function serviceAccountFor(config: Config, connectionId: string): string | undefined {
+  return config.google.connectionServiceAccounts[connectionId] ?? config.google.serviceAccountJson;
+}
+
 function validateConfig(config: Config): void {
+  const connections = enabledConnectors(config).map((c) => c.id);
+  // A typo in a per-MCP override would silently fall back to the shared value, so reject it.
+  for (const [prefix, overrides] of [
+    ['GOOGLE_OWNER_EMAIL_', config.google.connectionOwnerEmails],
+    ['GOOGLE_SERVICE_ACCOUNT_JSON_', config.google.connectionServiceAccounts],
+  ] as const) {
+    const unknown = Object.keys(overrides).filter((id) => !CONNECTORS.some((c) => c.id === id));
+    if (unknown.length > 0) {
+      throw new ConfigError(
+        `Unknown MCP in ${unknown.map((id) => prefix + connectionEnvSuffix(id)).join(', ')}; use one of: ${CONNECTORS.map((c) => prefix + connectionEnvSuffix(c.id)).join(', ')}`,
+      );
+    }
+  }
   if (config.google.authMode === 'oauth') {
     if (!config.google.clientId || !config.google.clientSecret) {
       throw new ConfigError(
@@ -251,8 +305,13 @@ function validateConfig(config: Config): void {
         'ENCRYPTION_KEY is required in oauth mode (it encrypts the stored Google refresh token)',
       );
     }
-  } else if (!config.google.serviceAccountJson) {
-    throw new ConfigError('GOOGLE_AUTH_MODE=service_account requires GOOGLE_SERVICE_ACCOUNT_JSON');
+  } else {
+    const missing = connections.filter((id) => !serviceAccountFor(config, id));
+    if (missing.length > 0) {
+      throw new ConfigError(
+        `GOOGLE_AUTH_MODE=service_account requires GOOGLE_SERVICE_ACCOUNT_JSON (or GOOGLE_SERVICE_ACCOUNT_JSON_<MCP> for: ${missing.map(connectionEnvSuffix).join(', ')})`,
+      );
+    }
   }
 
   if (config.encryptionKey && config.encryptionKey.length < 32) {
@@ -272,10 +331,13 @@ function validateConfig(config: Config): void {
         'TRANSPORT=http requires ADMIN_PASSWORD with at least 16 characters (used to approve connections; generate one with `openssl rand -base64 24`)',
       );
     }
-    if (config.google.authMode === 'oauth' && !config.google.ownerEmail) {
-      throw new ConfigError(
-        'TRANSPORT=http with GOOGLE_AUTH_MODE=oauth requires GOOGLE_OWNER_EMAIL, so only your Google account can ever be connected',
-      );
+    if (config.google.authMode === 'oauth') {
+      const missing = connections.filter((id) => allowedEmailsFor(config, id).length === 0);
+      if (missing.length > 0) {
+        throw new ConfigError(
+          `TRANSPORT=http with GOOGLE_AUTH_MODE=oauth requires GOOGLE_OWNER_EMAIL (or GOOGLE_OWNER_EMAIL_<MCP> for: ${missing.map(connectionEnvSuffix).join(', ')}), so only your Google accounts can ever be connected`,
+        );
+      }
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(config.publicUrl.hostname);
     if (config.publicUrl.protocol !== 'https:' && !local) {

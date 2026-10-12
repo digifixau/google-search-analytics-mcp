@@ -27,7 +27,12 @@ export async function connectClient(
   const db = openDb(':memory:');
   const audit = new AuditLog(db);
   const server = buildMcpServer(
-    { config, apis: async () => apis as GoogleApis, policy: new AccessPolicy(config), audit },
+    {
+      config,
+      apisFor: () => async () => apis as GoogleApis,
+      policy: new AccessPolicy(config),
+      audit,
+    },
     { scopes, actor: 'test' },
     getConnector(connectorId),
   );

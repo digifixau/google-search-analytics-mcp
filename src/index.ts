@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const app = createAppContext(config);
 
   if (command === 'google-auth') {
-    await runGoogleAuthCli(app);
+    await runGoogleAuthCli(app, connectorArg() ?? process.env.MCP_CONNECTOR ?? 'search-analytics');
     process.exit(0);
   }
   if (command && command !== 'serve') {

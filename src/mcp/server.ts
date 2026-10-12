@@ -14,7 +14,8 @@ export const SERVER_VERSION = '0.1.0';
 
 export interface ServerDeps {
   config: Config;
-  apis: GoogleApisProvider;
+  /** Google API clients for one MCP connection; a connector only ever receives its own. */
+  apisFor: (connectionId: string) => GoogleApisProvider;
   policy: AccessPolicy;
   audit: AuditLog;
   tools?: ToolDef[];
@@ -51,7 +52,12 @@ export function buildMcpServer(
     },
   );
 
-  const ctx: ToolContext = { apis: deps.apis, policy: deps.policy, config, actor: grant.actor };
+  const ctx: ToolContext = {
+    apis: deps.apisFor(connector.id),
+    policy: deps.policy,
+    config,
+    actor: grant.actor,
+  };
 
   for (const def of tools) {
     server.registerTool(

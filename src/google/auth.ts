@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { GoogleAuth, OAuth2Client, type AuthClient } from 'google-auth-library';
-import type { Config } from '../config.js';
+import {
+  CodeChallengeMethod,
+  GoogleAuth,
+  OAuth2Client,
+  type AuthClient,
+} from 'google-auth-library';
+import { allowedEmailsFor, serviceAccountFor, type Config, type Service } from '../config.js';
+import { enabledConnectors, type ConnectorDef } from '../mcp/connectors.js';
 import type { Encryptor } from '../store/crypto.js';
 import type { KvStore } from '../store/db.js';
 
@@ -23,11 +29,17 @@ export const GOOGLE_SCOPES = {
 } as const;
 
 const IDENTITY_SCOPES = ['openid', 'email'];
-const KV_KEY = 'google.oauth';
+/** KV key of the single connection used before per-MCP connections existed. Never modified. */
+export const LEGACY_KV_KEY = 'google.oauth';
+const kvKey = (connectionId: string) => `google.oauth.${connectionId}`;
+const disconnectedKey = (connectionId: string) => `google.oauth.${connectionId}.disconnected`;
 
-/** The Google OAuth scopes this server needs for its configured access mode and toolsets. */
-export function requiredGoogleScopes(config: Config): string[] {
-  const services = new Set(config.enabledServices);
+/** The Google OAuth scopes needed for the given services (default: all enabled services). */
+export function requiredGoogleScopes(
+  config: Config,
+  forServices: readonly Service[] = config.enabledServices,
+): string[] {
+  const services = new Set(forServices.filter((s) => config.enabledServices.includes(s)));
   const write = config.accessMode === 'readwrite';
   const toolsets = new Set(write ? config.writeToolsets : []);
   const scopes: string[] = [];
@@ -58,6 +70,16 @@ export function requiredGoogleScopes(config: Config): string[] {
   return scopes;
 }
 
+/** Scopes for one MCP's own Google connection. */
+export function connectionScopes(config: Config, connector: ConnectorDef): string[] {
+  const scopes = requiredGoogleScopes(config, connector.services);
+  // gtm_audit_container cross-checks GA4 measurement IDs using the GTM account's own credentials.
+  if (connector.services.includes('gtm') && !scopes.includes(GOOGLE_SCOPES.gaRead)) {
+    scopes.push(GOOGLE_SCOPES.gaRead);
+  }
+  return scopes;
+}
+
 /** `webmasters` implies `webmasters.readonly`; everything else must be granted literally. */
 export function missingScopes(required: string[], granted: string[]): string[] {
   const have = new Set(granted);
@@ -71,62 +93,96 @@ interface StoredOAuthCredentials {
   scopes: string[];
   email?: string;
   connectedAt: string;
+  /** Copied from the shared pre-upgrade connection rather than connected on its own. */
+  migratedFromShared?: boolean;
 }
 
 export interface GoogleAuthStatus {
+  connectionId: string;
+  title: string;
   mode: 'oauth' | 'service_account';
   connected: boolean;
   identity?: string;
   grantedScopes: string[];
   missingScopes: string[];
   connectedAt?: string;
+  migratedFromShared?: boolean;
+  allowedEmails: string[];
 }
 
 export class GoogleNotConnectedError extends Error {}
 
-export class GoogleAuthManager {
+/**
+ * One MCP's Google connection: its own account, encrypted refresh token, scopes and API client.
+ * Nothing here reads or writes another connection's credentials.
+ */
+export class GoogleConnection {
   private client: AuthClient | undefined;
 
   constructor(
     private readonly config: Config,
+    readonly connector: ConnectorDef,
     private readonly kv: KvStore,
     private readonly encryptor: Encryptor | undefined,
   ) {}
+
+  get id(): string {
+    return this.connector.id;
+  }
+
+  get title(): string {
+    return this.connector.title;
+  }
 
   get mode(): 'oauth' | 'service_account' {
     return this.config.google.authMode;
   }
 
+  get scopes(): string[] {
+    return connectionScopes(this.config, this.connector);
+  }
+
+  get allowedEmails(): string[] {
+    return allowedEmailsFor(this.config, this.id);
+  }
+
   status(): GoogleAuthStatus {
-    const required = requiredGoogleScopes(this.config);
+    const base = {
+      connectionId: this.id,
+      title: this.title,
+      allowedEmails: this.allowedEmails,
+    };
     if (this.mode === 'service_account') {
-      const key = loadServiceAccountKey(this.config.google.serviceAccountJson!);
+      const key = loadServiceAccountKey(serviceAccountFor(this.config, this.id)!);
       return {
+        ...base,
         mode: 'service_account',
         connected: true,
         identity: key.client_email,
-        grantedScopes: required,
+        grantedScopes: this.scopes,
         missingScopes: [],
       };
     }
     const stored = this.readStored();
     return {
+      ...base,
       mode: 'oauth',
       connected: Boolean(stored),
       identity: stored?.email,
       grantedScopes: stored?.scopes ?? [],
-      missingScopes: stored ? missingScopes(required, stored.scopes) : required,
+      missingScopes: stored ? missingScopes(this.scopes, stored.scopes) : this.scopes,
       connectedAt: stored?.connectedAt,
+      migratedFromShared: stored?.migratedFromShared,
     };
   }
 
-  /** Returns an authenticated client or throws an actionable error. */
+  /** Returns this connection's authenticated client or throws an actionable error. */
   async getClient(): Promise<AuthClient> {
     if (this.client) return this.client;
 
     if (this.mode === 'service_account') {
-      const credentials = loadServiceAccountKey(this.config.google.serviceAccountJson!);
-      const auth = new GoogleAuth({ credentials, scopes: requiredGoogleScopes(this.config) });
+      const credentials = loadServiceAccountKey(serviceAccountFor(this.config, this.id)!);
+      const auth = new GoogleAuth({ credentials, scopes: this.scopes });
       this.client = await auth.getClient();
       return this.client;
     }
@@ -134,38 +190,47 @@ export class GoogleAuthManager {
     const stored = this.readStored();
     if (!stored) {
       throw new GoogleNotConnectedError(
-        'Google account is not connected yet. The server owner must open ' +
-          `${this.setupHint()} and click "Connect Google".`,
+        `The ${this.title} MCP has no Google account connected yet. The server owner must open ` +
+          `${this.setupHint()} and click "Connect" on the ${this.title} card.`,
       );
     }
     const oauth = this.newOAuthClient();
     oauth.setCredentials({ refresh_token: stored.refreshToken });
     oauth.on('tokens', (tokens) => {
-      if (tokens.refresh_token && tokens.refresh_token !== stored.refreshToken) {
-        this.writeStored({ ...stored, refreshToken: tokens.refresh_token });
+      // Google rarely rotates refresh tokens; when it does, persist it for this connection only.
+      const current = this.readStored();
+      if (tokens.refresh_token && current && tokens.refresh_token !== current.refreshToken) {
+        this.writeStored({ ...current, refreshToken: tokens.refresh_token });
       }
     });
     this.client = oauth;
     return oauth;
   }
 
-  /** Google consent URL for the owner (oauth mode only). */
-  buildConsentUrl(redirectUri: string, state: string): string {
-    const scopes = [...IDENTITY_SCOPES, ...requiredGoogleScopes(this.config)];
+  /** Google consent URL for this connection (oauth mode only). */
+  buildConsentUrl(redirectUri: string, state: string, codeChallenge: string): string {
     return this.newOAuthClient(redirectUri).generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
-      include_granted_scopes: true,
-      scope: scopes,
+      // Never merge scopes granted to other connections on the same Google account.
+      include_granted_scopes: false,
+      scope: [...IDENTITY_SCOPES, ...this.scopes],
       state,
-      login_hint: this.config.google.ownerEmail,
+      // Only hint when there is exactly one choice (an empty login_hint would still be sent).
+      ...(this.allowedEmails.length === 1 ? { login_hint: this.allowedEmails[0] } : {}),
+      code_challenge: codeChallenge,
+      code_challenge_method: CodeChallengeMethod.S256,
     });
   }
 
-  /** Exchanges the consent code, enforces GOOGLE_OWNER_EMAIL and stores the refresh token. */
-  async completeConsent(code: string, redirectUri: string): Promise<GoogleAuthStatus> {
+  /** Exchanges the consent code (PKCE), enforces the allowed accounts and stores this connection's token. */
+  async completeConsent(
+    code: string,
+    redirectUri: string,
+    codeVerifier: string,
+  ): Promise<GoogleAuthStatus> {
     const oauth = this.newOAuthClient(redirectUri);
-    const { tokens } = await oauth.getToken(code);
+    const { tokens } = await oauth.getToken({ code, codeVerifier, redirect_uri: redirectUri });
     if (!tokens.refresh_token) {
       throw new Error(
         'Google did not return a refresh token. Remove this app from https://myaccount.google.com/permissions and try again.',
@@ -181,10 +246,10 @@ export class GoogleAuthManager {
       // Only trust an email Google has verified.
       if (payload?.email_verified) email = payload.email?.toLowerCase();
     }
-    const owner = this.config.google.ownerEmail;
-    if (owner && email !== owner) {
+    const allowed = this.allowedEmails;
+    if (allowed.length > 0 && (!email || !allowed.includes(email))) {
       throw new Error(
-        `Signed in as ${email ?? 'an unknown account'}, but GOOGLE_OWNER_EMAIL is ${owner}. Connection refused.`,
+        `Signed in as ${email ?? 'an unknown account'}, which is not allowed for the ${this.title} MCP (allowed: ${allowed.join(', ')}). Connection refused.`,
       );
     }
     const scopes = (tokens.scope ?? '').split(/\s+/).filter(Boolean);
@@ -194,13 +259,34 @@ export class GoogleAuthManager {
       email,
       connectedAt: new Date().toISOString(),
     });
+    this.kv.delete(disconnectedKey(this.id));
     this.client = undefined;
     return this.status();
   }
 
+  /**
+   * Forgets this connection's token. Deliberately does not call Google's revoke endpoint: revoking
+   * ends the whole grant, which would also break other MCPs connected with the same Google account.
+   */
   disconnect(): void {
-    this.kv.delete(KV_KEY);
+    this.kv.delete(kvKey(this.id));
+    this.kv.set(disconnectedKey(this.id), new Date().toISOString());
     this.client = undefined;
+  }
+
+  /**
+   * Copies the pre-upgrade shared connection into this one, unless it has its own, was disconnected,
+   * or is restricted (GOOGLE_OWNER_EMAIL_<MCP>) to accounts that don't include the shared one.
+   */
+  adoptShared(legacyCiphertext: string): 'adopted' | 'skipped' | 'not-allowed' {
+    if (this.kv.get(kvKey(this.id)) || this.kv.get(disconnectedKey(this.id))) return 'skipped';
+    const legacy = this.decrypt(legacyCiphertext);
+    const allowed = this.allowedEmails;
+    if (allowed.length > 0 && (!legacy.email || !allowed.includes(legacy.email))) {
+      return 'not-allowed';
+    }
+    this.writeStored({ ...legacy, migratedFromShared: true });
+    return 'adopted';
   }
 
   private newOAuthClient(redirectUri?: string): OAuth2Client {
@@ -214,24 +300,88 @@ export class GoogleAuthManager {
   private setupHint(): string {
     return this.config.publicUrl
       ? new URL('/setup', this.config.publicUrl).toString()
-      : '`npx google-search-analytics-mcp google-auth`';
+      : `\`google-auth --connector ${this.id}\``;
   }
 
-  private readStored(): StoredOAuthCredentials | undefined {
-    const raw = this.kv.get(KV_KEY);
-    if (!raw || !this.encryptor) return undefined;
+  private decrypt(raw: string): StoredOAuthCredentials {
+    if (!this.encryptor) throw new Error('ENCRYPTION_KEY is required to read Google credentials');
     try {
       return JSON.parse(this.encryptor.decrypt(raw)) as StoredOAuthCredentials;
     } catch {
       throw new Error(
-        'Stored Google credentials could not be decrypted. Was ENCRYPTION_KEY changed? Reconnect Google via /setup.',
+        `Stored Google credentials for the ${this.title} MCP could not be decrypted. Was ENCRYPTION_KEY changed? Reconnect it via /setup.`,
       );
     }
   }
 
+  private readStored(): StoredOAuthCredentials | undefined {
+    const raw = this.kv.get(kvKey(this.id));
+    return raw ? this.decrypt(raw) : undefined;
+  }
+
   private writeStored(value: StoredOAuthCredentials): void {
     if (!this.encryptor) throw new Error('ENCRYPTION_KEY is required to store Google credentials');
-    this.kv.set(KV_KEY, this.encryptor.encrypt(JSON.stringify(value)));
+    this.kv.set(kvKey(this.id), this.encryptor.encrypt(JSON.stringify(value)));
+  }
+}
+
+/** The Google connections of all enabled MCPs, one per connector. */
+export class GoogleConnections {
+  private readonly connections = new Map<string, GoogleConnection>();
+
+  constructor(
+    private readonly config: Config,
+    private readonly kv: KvStore,
+    encryptor: Encryptor | undefined,
+  ) {
+    for (const connector of enabledConnectors(config)) {
+      this.connections.set(connector.id, new GoogleConnection(config, connector, kv, encryptor));
+    }
+  }
+
+  get mode(): 'oauth' | 'service_account' {
+    return this.config.google.authMode;
+  }
+
+  all(): GoogleConnection[] {
+    return [...this.connections.values()];
+  }
+
+  has(connectionId: string): boolean {
+    return this.connections.has(connectionId);
+  }
+
+  get(connectionId: string): GoogleConnection {
+    const connection = this.connections.get(connectionId);
+    if (!connection) throw new Error(`Unknown or disabled MCP connection "${connectionId}"`);
+    return connection;
+  }
+
+  /**
+   * One-way, non-destructive upgrade from the single shared connection: each MCP without its own
+   * connection starts with a copy of it. The shared record itself is never changed or revoked, so the
+   * previous version keeps working after a rollback.
+   */
+  migrateShared(): string[] {
+    if (this.mode !== 'oauth') return [];
+    const legacy = this.kv.get(LEGACY_KV_KEY);
+    if (!legacy) return [];
+    const migrated: string[] = [];
+    const notAllowed: string[] = [];
+    for (const c of this.all()) {
+      const result = c.adoptShared(legacy);
+      if (result === 'adopted') migrated.push(c.id);
+      if (result === 'not-allowed') notAllowed.push(c.id);
+    }
+    if (migrated.length) {
+      console.error(`[google] migrated the shared Google connection to: ${migrated.join(', ')}`);
+    }
+    if (notAllowed.length) {
+      console.error(
+        `[google] not migrated (its account is not in GOOGLE_OWNER_EMAIL_<MCP>), connect on /setup: ${notAllowed.join(', ')}`,
+      );
+    }
+    return migrated;
   }
 }
 

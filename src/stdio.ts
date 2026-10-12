@@ -18,8 +18,8 @@ export async function startStdio(app: AppContext, connectorId = 'search-analytic
     connector,
   );
   await server.connect(new StdioServerTransport());
-  const status = app.googleAuth.status();
+  const status = app.google.get(connector.id).status();
   console.error(
-    `[gsa-mcp] stdio ${connector.title} MCP ready (${app.config.accessMode}); Google ${status.connected ? `connected as ${status.identity}` : 'NOT connected — run `google-auth`'}`,
+    `[gsa-mcp] stdio ${connector.title} MCP ready (${app.config.accessMode}); Google ${status.connected ? `connected as ${status.identity}` : `NOT connected — run \`google-auth --connector ${connector.id}\``}`,
   );
 }

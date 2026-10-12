@@ -19,7 +19,8 @@ import {
 import { buildMcpServer, SERVER_NAME, SERVER_VERSION, toolInConnector } from '../mcp/server.js';
 import { allTools } from '../tools/index.js';
 import { isToolEnabled } from '../tools/registry.js';
-import { randomToken } from '../store/crypto.js';
+import { OAuth2Client } from 'google-auth-library';
+import { randomToken, sha256 } from '../store/crypto.js';
 
 const SESSION_COOKIE = 'gsa_setup';
 const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -52,7 +53,11 @@ export function createHttpApp(app: AppContext): express.Express {
   const scopesSupported =
     config.accessMode === 'readwrite' ? [MCP_SCOPES.read, MCP_SCOPES.write] : [MCP_SCOPES.read];
   const sessions = new Map<string, { csrf: string; expiresAt: number }>();
-  const googleStates = new Map<string, number>();
+  /** Pending Google consents, keyed by sha256(state): which MCP, PKCE verifier, and the setup session that started it. */
+  const googleStates = new Map<
+    string,
+    { connectionId: string; codeVerifier: string; sessionId: string; expiresAt: number }
+  >();
 
   const server = express();
   server.disable('x-powered-by');
@@ -210,33 +215,37 @@ export function createHttpApp(app: AppContext): express.Express {
   server.get('/setup', (req, res) => {
     const session = getSession(req);
     if (!session) return html(res, 200, loginPage());
-    const status = app.googleAuth.status();
+    const flashConnection =
+      typeof req.query.connection === 'string' && app.google.has(req.query.connection)
+        ? app.google.get(req.query.connection).title
+        : undefined;
     const flash =
-      req.query.connected === '1'
-        ? 'Google account connected.'
-        : req.query.revoked === '1'
-          ? 'Client access revoked.'
-          : undefined;
+      req.query.connected === '1' && flashConnection
+        ? `Google account connected to the ${flashConnection} MCP.`
+        : req.query.disconnected === '1' && flashConnection
+          ? `Google account disconnected from the ${flashConnection} MCP.`
+          : req.query.revoked === '1'
+            ? 'Client access revoked.'
+            : undefined;
     html(
       res,
       200,
       dashboardPage({
         csrf: session.csrf,
-        endpoints: connectors.map((c) => {
+        connections: connectors.map((c) => {
           const tools = allTools.filter((t) => toolInConnector(t, c));
           const count = (scopes: string[]) =>
             tools.filter((t) => isToolEnabled(t, config, scopes)).length;
           const rw = count([MCP_SCOPES.read, MCP_SCOPES.write]);
           const ro = count([MCP_SCOPES.read]);
           return {
-            title: c.title,
             url: connectorUrl(c, publicUrl).href,
             tools: rw === ro ? `${ro}` : `${ro} read-only / ${rw} read+write`,
+            google: app.google.get(c.id).status(),
           };
         }),
         accessMode: config.accessMode,
         writeToolsets: config.writeToolsets,
-        google: status,
         clients: provider.listClients(),
         audit: app.audit.recent(20).map((a) => ({ ...a, ts: new Date(a.ts).toISOString() })),
         flash,
@@ -270,46 +279,66 @@ export function createHttpApp(app: AppContext): express.Express {
 
   const googleRedirectUri = new URL('/oauth/google/callback', publicUrl).href;
 
-  server.post('/setup/google/connect', form, requireSession, (_req, res) => {
+  /** The MCP a setup form refers to; only enabled connectors are accepted. */
+  const formConnection = (req: Request) => {
+    const id = String(req.body?.connection ?? '');
+    return app.google.has(id) ? app.google.get(id) : undefined;
+  };
+
+  server.post('/setup/google/connect', form, requireSession, async (req, res) => {
     if (config.google.authMode !== 'oauth')
       return html(res, 400, messagePage('Not available', 'Service account mode needs no consent.'));
+    const connection = formConnection(req);
+    if (!connection)
+      return html(res, 400, messagePage('Unknown MCP', 'Pick an MCP card on /setup.'));
+    const now = Date.now();
+    for (const [key, value] of googleStates) if (value.expiresAt < now) googleStates.delete(key);
     const state = randomToken(24);
-    googleStates.set(state, Date.now() + 10 * 60 * 1000);
-    res.redirect(303, app.googleAuth.buildConsentUrl(googleRedirectUri, state));
+    const { codeVerifier, codeChallenge } = await new OAuth2Client().generateCodeVerifierAsync();
+    googleStates.set(sha256(state), {
+      connectionId: connection.id,
+      codeVerifier,
+      sessionId: getSession(req)!.id,
+      expiresAt: now + 10 * 60 * 1000,
+    });
+    res.redirect(303, connection.buildConsentUrl(googleRedirectUri, state, codeChallenge!));
   });
 
   server.get('/oauth/google/callback', async (req, res) => {
-    const state = String(req.query.state ?? '');
-    const expiry = googleStates.get(state);
-    googleStates.delete(state);
-    if (!expiry || expiry < Date.now()) {
-      return html(
-        res,
-        400,
-        messagePage(
-          'Google connection failed',
-          'The request expired or was not started from /setup.',
-        ),
+    const key = sha256(String(req.query.state ?? ''));
+    const pending = googleStates.get(key);
+    googleStates.delete(key);
+    const fail = (message: string) =>
+      html(res, 400, messagePage('Google connection failed', message));
+    if (!pending || pending.expiresAt < Date.now()) {
+      return fail('The request expired, was already used, or was not started from /setup.');
+    }
+    // The flow must finish in the same signed-in /setup session that started it.
+    if (getSession(req)?.id !== pending.sessionId) {
+      return fail(
+        'Finish the Google sign-in in the same browser session that started it on /setup.',
       );
     }
-    if (req.query.error) {
-      return html(
-        res,
-        400,
-        messagePage('Google connection failed', `Google returned: ${String(req.query.error)}`),
-      );
-    }
+    if (req.query.error) return fail(`Google returned: ${String(req.query.error)}`);
+    const connection = app.google.get(pending.connectionId);
     try {
-      await app.googleAuth.completeConsent(String(req.query.code ?? ''), googleRedirectUri);
-      res.redirect(303, '/setup?connected=1');
+      await connection.completeConsent(
+        String(req.query.code ?? ''),
+        googleRedirectUri,
+        pending.codeVerifier,
+      );
+      res.redirect(303, `/setup?connected=1&connection=${encodeURIComponent(connection.id)}`);
     } catch (error) {
-      html(res, 400, messagePage('Google connection failed', (error as Error).message));
+      fail((error as Error).message);
     }
   });
 
-  server.post('/setup/google/disconnect', form, requireSession, (_req, res) => {
-    app.googleAuth.disconnect();
-    res.redirect(303, '/setup');
+  server.post('/setup/google/disconnect', form, requireSession, (req, res) => {
+    const connection = formConnection(req);
+    if (!connection)
+      return html(res, 400, messagePage('Unknown MCP', 'Pick an MCP card on /setup.'));
+    connection.disconnect();
+    res.redirect(303, `/setup?disconnected=1&connection=${encodeURIComponent(connection.id)}`);
   });
 
   server.post('/setup/clients/revoke', form, requireSession, (req, res) => {
@@ -325,20 +354,21 @@ export async function startHttp(app: AppContext): Promise<void> {
   await new Promise<void>((resolve) => {
     server.listen(app.config.port, app.config.host, () => resolve());
   });
-  const status = app.googleAuth.status();
   console.error(
     `[gsa-mcp] HTTP server listening on ${app.config.host}:${app.config.port} (${app.config.accessMode})`,
   );
   for (const c of enabledConnectors(app.config)) {
-    console.error(`[gsa-mcp]   ${c.title} MCP: ${connectorUrl(c, app.config.publicUrl!).href}`);
-  }
-  if (!status.connected) {
+    const status = app.google.get(c.id).status();
+    const google = !status.connected
+      ? 'Google NOT connected'
+      : `Google: ${status.identity ?? 'connected'}${status.migratedFromShared ? ' (shared, from before upgrade)' : ''}${status.missingScopes.length ? ' — missing scopes, reconnect' : ''}`;
     console.error(
-      `[gsa-mcp] Google is not connected yet: open ${new URL('/setup', app.config.publicUrl).href}`,
+      `[gsa-mcp]   ${c.title} MCP: ${connectorUrl(c, app.config.publicUrl!).href} — ${google}`,
     );
-  } else if (status.missingScopes.length) {
+  }
+  if (app.google.all().some((c) => !c.status().connected)) {
     console.error(
-      `[gsa-mcp] Google grant is missing scopes for ${app.config.accessMode} mode; reconnect at /setup`,
+      `[gsa-mcp] Connect Google accounts at ${new URL('/setup', app.config.publicUrl).href}`,
     );
   }
 }
