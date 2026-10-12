@@ -306,23 +306,17 @@ describe('gtm', () => {
       tagmanager: {
         accounts: {
           containers: {
-            get: vi
-              .fn()
-              .mockResolvedValue({
-                data: { publicId: 'GTM-ABC123', containerId: '2', name: 'Site' },
-              }),
+            get: vi.fn().mockResolvedValue({
+              data: { publicId: 'GTM-ABC123', containerId: '2', name: 'Site' },
+            }),
             workspaces: ws,
             versions: {
-              live: vi
-                .fn()
-                .mockResolvedValue({
-                  data: { containerVersionId: '7', path: `${CONTAINER}/versions/7` },
-                }),
-              publish: vi
-                .fn()
-                .mockResolvedValue({
-                  data: { containerVersion: { containerVersionId: '8', name: 'New' } },
-                }),
+              live: vi.fn().mockResolvedValue({
+                data: { containerVersionId: '7', path: `${CONTAINER}/versions/7` },
+              }),
+              publish: vi.fn().mockResolvedValue({
+                data: { containerVersion: { containerVersionId: '8', name: 'New' } },
+              }),
             },
             ...overrides,
           },
@@ -340,11 +334,9 @@ describe('gtm', () => {
         },
         properties: {
           dataStreams: {
-            list: vi
-              .fn()
-              .mockResolvedValue({
-                data: { dataStreams: [{ webStreamData: { measurementId: 'G-KNOWN123' } }] },
-              }),
+            list: vi.fn().mockResolvedValue({
+              data: { dataStreams: [{ webStreamData: { measurementId: 'G-KNOWN123' } }] },
+            }),
           },
         },
       },
