@@ -7,7 +7,8 @@ The main path uses **Coolify**. If you use another host, [section 7](#7-other-ho
 **What you'll end up with**
 
 ```
-Claude / ChatGPT ──HTTPS──▶ https://mcp.example.com/mcp ──▶ Google Search Console + GA4
+Claude / ChatGPT ──HTTPS──▶ https://mcp.example.com/mcp      ──▶ Google Search Console + GA4
+                 └─HTTPS──▶ https://mcp.example.com/mcp/gtm  ──▶ Google Tag Manager
                              (your Coolify server)          (as your Google account)
 ```
 
@@ -130,7 +131,9 @@ Leave **"Build Variable"** unticked for all of these; they're only needed at run
 Click **Deploy** and watch **Logs**. A healthy start ends with:
 
 ```
-[gsa-mcp] HTTP server listening on 0.0.0.0:3000 — MCP endpoint https://mcp.example.com/mcp (readonly)
+[gsa-mcp] HTTP server listening on 0.0.0.0:3000 (readonly)
+[gsa-mcp]   Google Search Console & Analytics MCP: https://mcp.example.com/mcp
+[gsa-mcp]   Google Tag Manager MCP: https://mcp.example.com/mcp/gtm
 [gsa-mcp] Google is not connected yet: open https://mcp.example.com/setup
 ```
 
@@ -150,13 +153,18 @@ In service-account mode, `/setup` shows the service account email instead and th
 
 ## 5. Connect your AI apps
 
-MCP URL: **`https://mcp.example.com/mcp`**
+The app serves several MCPs. Add **each one you want as a separate connector**:
 
-| App                               | Steps                                                                                                                                   |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **Claude** (web, desktop, mobile) | Settings → Connectors → **Add custom connector** → paste the URL → **Connect**.                                                         |
-| **ChatGPT**                       | Settings → Apps & Connectors → Advanced → enable **Developer mode**. Then create a connector with the URL and authentication **OAuth**. |
-| **Claude Code**                   | `claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp`, then run `/mcp` in Claude Code to sign in.       |
+| MCP                               | URL                               |
+| --------------------------------- | --------------------------------- |
+| Google Search Console & Analytics | `https://mcp.example.com/mcp`     |
+| Google Tag Manager                | `https://mcp.example.com/mcp/gtm` |
+
+| App                               | Steps                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude** (web, desktop, mobile) | Settings → Connectors → **Add custom connector** → paste the URL → **Connect**.                                                                                        |
+| **ChatGPT**                       | Settings → Apps & Connectors → Advanced → enable **Developer mode**. Then create a connector with the URL and authentication **OAuth**.                                |
+| **Claude Code**                   | `claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp` (and `google-tag-manager …/mcp/gtm`), then run `/mcp` in Claude Code to sign in. |
 
 Each one opens **your server's approval page**:
 
@@ -164,7 +172,7 @@ Each one opens **your server's approval page**:
 2. Tick **Make changes (write)** only if you want this app to be able to change things. The box appears only in `readwrite` mode.
 3. Enter `ADMIN_PASSWORD` and click **Approve**.
 
-You can review and revoke approved apps on `/setup` at any time.
+Repeat for each MCP. Every connector is approved on its own, so read/write can differ per MCP (e.g. GTM read-only, Search Console & Analytics read+write). You can review and revoke approved apps on `/setup` at any time; the table shows which MCP each one uses.
 
 ---
 

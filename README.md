@@ -2,7 +2,15 @@
 
 A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4** and **Google Tag Manager**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
 
-- **68 tools**: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports (standard, realtime, pivot), GA4 admin, audiences, data streams, the Indexing API, and GTM auditing, editing and publishing. Turn whole products off with `ENABLED_SERVICES`.
+- **One app, several MCPs.** Each product family is its own MCP endpoint, so every connector keeps a short, focused tool list:
+
+  | MCP                               | URL        | Tools                                                                                                                                                 |
+  | --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Google Search Console & Analytics | `/mcp`     | 46: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports, GA4 admin, audiences, data streams, Indexing API |
+  | Google Tag Manager                | `/mcp/gtm` | 22: container audit, tags/triggers/variables, workspaces, versions, publishing                                                                        |
+
+  All MCPs share one deployment, one Google sign-in, one approval page and one audit log. More can be added later (e.g. YouTube Analytics at `/mcp/youtube`); see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
+
 - **Remote or local**: a Streamable HTTP endpoint with its own OAuth 2.1 server (works as a custom connector in claude.ai and ChatGPT), or stdio for Claude Desktop and Claude Code.
 - **Your credentials stay on your server**: sign in to Google once (OAuth) or use a service account. Refresh tokens are encrypted at rest with AES-256-GCM.
 - **Layered access control**: a server-wide mode, a per-connection grant, optional allowlists, and an audit log of every write.
@@ -104,7 +112,12 @@ Any other Docker host works the same way: `cp .env.example .env`, edit it, then 
 
 ## 3. Connect your AI clients
 
-The MCP URL is **`https://mcp.example.com/mcp`**.
+Add **each MCP as its own connector** in your AI app; connect only the ones you need:
+
+- Search Console & Analytics: **`https://mcp.example.com/mcp`**
+- Tag Manager: **`https://mcp.example.com/mcp/gtm`**
+
+Each connector is approved separately, so you can, for example, give the GTM connector write access while keeping Search Console & Analytics read-only. A connection approved for one MCP can't be used on another. `/setup` lists every MCP URL with its tool count.
 
 ### Claude (claude.ai, Desktop and mobile)
 
@@ -119,8 +132,9 @@ Enable **Developer mode** (Settings → Apps & Connectors → Advanced settings)
 ```bash
 # OAuth (opens the consent page in your browser)
 claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp
+claude mcp add --transport http google-tag-manager https://mcp.example.com/mcp/gtm
 
-# or a static API key from MCP_API_KEYS (e.g. MCP_API_KEYS=claude-code=<token>:read+write)
+# or a static API key from MCP_API_KEYS (e.g. MCP_API_KEYS=claude-code=<token>:read+write); API keys work on every MCP
 claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp \
   --header "Authorization: Bearer <token>"
 ```
@@ -149,12 +163,17 @@ GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... ENCRYPTION_KEY=... DATA_DIR=~/.gsa
         "GOOGLE_CLIENT_ID": "...",
         "GOOGLE_CLIENT_SECRET": "..."
       }
+    },
+    "google-tag-manager": {
+      "command": "node",
+      "args": ["/absolute/path/to/dist/index.js", "--connector", "gtm"],
+      "env": { "...": "same env as above" }
     }
   }
 }
 ```
 
-In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
+In stdio mode each process serves one MCP (`--connector search-analytics` by default, or `--connector gtm`), and the connection gets whatever `ACCESS_MODE` allows.
 
 ---
 
@@ -189,7 +208,7 @@ In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
 
 | Someone with the link tries to…                   | What happens                                                                                                         |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Call `/mcp` directly                              | `401`: every request needs a token issued by this server (or a configured API key).                                  |
+| Call `/mcp` or `/mcp/gtm` directly                | `401`: every request needs a token issued by this server (or a configured API key).                                  |
 | Add it as a connector in their own Claude/ChatGPT | They reach the consent page, but approving needs `ADMIN_PASSWORD`. Without it no token is issued.                    |
 | Open `/setup`                                     | Password prompt; nothing is shown before sign-in.                                                                    |
 | Connect their own Google account                  | Impossible: Google can only be linked from `/setup`, and only the verified `GOOGLE_OWNER_EMAIL` account is accepted. |
@@ -201,8 +220,21 @@ In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
 - Access and refresh tokens are stored only as SHA-256 hashes. Refresh tokens rotate on every use, and a reused refresh token is rejected.
 - Dynamic client registration accepts any `https` redirect URI (or `http` on localhost) and is limited to 20 registrations per hour per IP. Registrations that never get approved are deleted after 24 hours.
 - Review and revoke connected clients on `/setup`. To revoke Google access entirely, use `/setup → Disconnect` and <https://myaccount.google.com/permissions>.
-- The `/mcp` endpoint is stateless and validates the `Host` header against `PUBLIC_URL`.
+- Each MCP endpoint is stateless and validates the `Host` header against `PUBLIC_URL`.
+- Connections are bound to the MCP they were approved for (OAuth `resource`), so a token approved for Tag Manager is refused on `/mcp`, and the reverse. Static API keys work on every MCP.
 - If you suspect the password leaked: change `ADMIN_PASSWORD`, redeploy, and revoke any unknown clients on `/setup`.
+
+## Adding a new MCP (e.g. YouTube Analytics)
+
+Every MCP endpoint is a **connector** in `src/mcp/connectors.ts`. Adding one is mostly additive:
+
+1. **Service and write toolsets.** In `src/config.ts`, add the service to `SERVICES` (e.g. `'youtube'`) and any write toolsets to `WRITE_TOOLSETS`. Map them in `serviceOf()` in `src/tools/registry.ts`.
+2. **Google scopes.** In `requiredGoogleScopes()` in `src/google/auth.ts`, add the scopes for read-only and for each write toolset. Existing deployments will see "Reconnect Google" on `/setup`.
+3. **API client.** Add the client to `GoogleApis` in `src/google/clients.ts`, e.g. `google.youtubeAnalytics({ version: 'v2' })`.
+4. **Tools.** Write `src/tools/youtube.ts` with `defineTool({ toolset: 'youtube', access: 'read' | 'write', ... })` and register it in `src/tools/index.ts`. Read-only gating, `[WRITE]` labels, confirmations and the audit log apply automatically.
+5. **Connector.** Add an entry to `CONNECTORS`: `{ id: 'youtube', path: '/mcp/youtube', serverName, title, services: ['youtube'], includeCompat: false, instructions }`.
+
+The HTTP routes, OAuth resource metadata, token binding, consent page, `/setup` listing, `ENABLED_SERVICES` switch and stdio `--connector youtube` all follow from the connector entry.
 
 ## Development
 
@@ -214,4 +246,4 @@ npm run lint && npm run typecheck && npm run build
 npx @modelcontextprotocol/inspector   # point it at http://localhost:3000/mcp or the stdio command
 ```
 
-Project layout: `src/tools/*` (tool definitions), `src/mcp/server.ts` (per-grant tool registration), `src/auth/*` (OAuth server and consent pages), `src/http/app.ts` (Express app), `src/google/*` (Google auth and clients), `src/store/*` (SQLite and encryption).
+Project layout: `src/tools/*` (tool definitions), `src/mcp/connectors.ts` (MCP endpoints), `src/mcp/server.ts` (per-connector, per-grant tool registration), `src/auth/*` (OAuth server and consent pages), `src/http/app.ts` (Express app), `src/google/*` (Google auth and clients), `src/store/*` (SQLite and encryption).

@@ -21,6 +21,7 @@ import { MCP_SCOPES, type Config } from '../config.js';
 import { randomToken, safeEqual, sha256 } from '../store/crypto.js';
 import { KvStore, type Db } from '../store/db.js';
 import { LoginGuard } from './guard.js';
+import { connectorForResource, connectorUrl, enabledConnectors } from '../mcp/connectors.js';
 import { consentPage, page } from './pages.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
@@ -93,21 +94,33 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     this.guard = new LoginGuard(new KvStore(db));
   }
 
-  get mcpUrl(): URL {
-    return new URL('/mcp', this.config.publicUrl);
-  }
-
   private writeAvailable(): boolean {
     return this.config.accessMode === 'readwrite';
   }
 
-  private validateResource(resource: URL | string | undefined): string {
-    if (!resource) return this.mcpUrl.href;
-    const url = new URL(String(resource));
-    if (url.origin !== this.config.publicUrl!.origin) {
-      throw new InvalidTargetError(`Unknown resource ${url.href}`);
+  /**
+   * Tokens are bound to the MCP endpoint (RFC 8707 resource) they were approved for.
+   * Without a resource parameter the token is valid on every endpoint (older clients, CLI tools).
+   */
+  private validateResource(resource: URL | string | undefined): string | undefined {
+    if (!resource) return undefined;
+    const connector = connectorForResource(resource, this.config);
+    if (!connector) {
+      const known = enabledConnectors(this.config)
+        .map((c) => connectorUrl(c, this.config.publicUrl!).href)
+        .join(', ');
+      throw new InvalidTargetError(`Unknown resource ${String(resource)}. Use one of: ${known}`);
     }
-    return url.href;
+    return connectorUrl(connector, this.config.publicUrl!).href;
+  }
+
+  /** Name of the MCP a resource refers to, for the consent page and /setup. */
+  private resourceTitle(resource: URL | string | null | undefined): string {
+    if (!resource) {
+      const all = enabledConnectors(this.config);
+      return all.length === 1 ? all[0]!.title : 'every MCP on this server';
+    }
+    return connectorForResource(resource, this.config)?.title ?? String(resource);
   }
 
   async authorize(
@@ -180,6 +193,7 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     return consentPage({
       requestId,
       clientName: p.client.client_name ?? 'An MCP client',
+      mcpTitle: this.resourceTitle(p.params.resource),
       redirectHost: new URL(p.params.redirectUri).host,
       writeAvailable: this.writeAvailable(),
       writeRequested: (p.params.scopes ?? []).includes(MCP_SCOPES.write),
@@ -372,7 +386,6 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
           clientId: `api-key:${key.label}`,
           scopes: key.scopes,
           expiresAt: Math.floor(Date.now() / 1000) + 3600,
-          resource: this.mcpUrl,
         };
       }
     }
@@ -410,17 +423,31 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     this.db.prepare('DELETE FROM oauth_clients WHERE client_id = ?').run(clientId);
   }
 
-  listClients(): Array<{ clientId: string; name: string; scopes: string; lastIssued: string }> {
+  listClients(): Array<{
+    clientId: string;
+    name: string;
+    mcp: string;
+    scopes: string;
+    lastIssued: string;
+  }> {
     const rows = this.db
       .prepare(
-        `SELECT c.client_id, c.data, MAX(t.created_at) AS last, GROUP_CONCAT(DISTINCT t.scopes) AS scopes
+        `SELECT c.client_id, c.data, MAX(t.created_at) AS last, GROUP_CONCAT(DISTINCT t.scopes) AS scopes,
+                GROUP_CONCAT(DISTINCT COALESCE(t.resource, '')) AS resources
          FROM oauth_clients c JOIN tokens t ON t.client_id = c.client_id AND t.kind = 'refresh' AND t.expires_at > ?
          GROUP BY c.client_id ORDER BY last DESC`,
       )
-      .all(Date.now()) as Array<{ client_id: string; data: string; last: number; scopes: string }>;
+      .all(Date.now()) as Array<{
+      client_id: string;
+      data: string;
+      last: number;
+      scopes: string;
+      resources: string;
+    }>;
     return rows.map((r) => ({
       clientId: r.client_id,
       name: (JSON.parse(r.data) as OAuthClientInformationFull).client_name ?? 'Unnamed client',
+      mcp: [...new Set(r.resources.split(','))].map((res) => this.resourceTitle(res)).join(', '),
       scopes: [...new Set(r.scopes.split(/[ ,]/))].join(' '),
       lastIssued: new Date(r.last).toISOString(),
     }));

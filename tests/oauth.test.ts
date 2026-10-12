@@ -40,13 +40,20 @@ async function startAuth(
   provider: OwnerOAuthProvider,
   client: OAuthClientInformationFull,
   scopes: string[] = [],
+  resource?: string,
 ) {
   const res = fakeRes();
   const verifier = 'v'.repeat(50);
   const codeChallenge = createHash('sha256').update(verifier).digest('base64url');
   await provider.authorize(
     client,
-    { scopes, codeChallenge, redirectUri: client.redirect_uris[0]!.toString(), state: 's1' },
+    {
+      scopes,
+      codeChallenge,
+      redirectUri: client.redirect_uris[0]!.toString(),
+      state: 's1',
+      resource: resource ? new URL(resource) : undefined,
+    },
     res,
   );
   const requestId = /name="request_id" value="([^"]+)"/.exec(res.body)![1]!;
@@ -91,7 +98,8 @@ describe('OwnerOAuthProvider', () => {
 
     const info = await provider.verifyAccessToken(tokens.access_token);
     expect(info.scopes).toEqual(['mcp:read']);
-    expect(info.resource?.href).toBe('https://mcp.example.com/mcp');
+    // No resource parameter was sent, so the token is not tied to one MCP endpoint.
+    expect(info.resource).toBeUndefined();
 
     const refreshed = await provider.exchangeRefreshToken(client, tokens.refresh_token!);
     expect(refreshed.access_token).not.toBe(tokens.access_token);
@@ -276,6 +284,52 @@ describe('OwnerOAuthProvider', () => {
         '<meta http-equiv="refresh" content="0;url=https://chatgpt.com/connector_platform_oauth_redirect?code=a&amp;state=b&quot;&lt;">',
       );
       expect(html).toContain('Connection approved');
+    });
+  });
+
+  describe('separate MCP endpoints', () => {
+    const approveAndExchange = async (resource?: string) => {
+      const { provider, client } = setup();
+      const { requestId, html } = await startAuth(provider, client, [], resource);
+      const out = provider.handleConsent(
+        { request_id: requestId, password: 'correct-horse-battery', decision: 'approve' },
+        'ip',
+      );
+      const code = new URL((out as { location: string }).location).searchParams.get('code')!;
+      const tokens = await provider.exchangeAuthorizationCode(client, code);
+      return {
+        html,
+        info: await provider.verifyAccessToken(tokens.access_token),
+        provider,
+        tokens,
+        client,
+      };
+    };
+
+    it('binds a token to the GTM endpoint and names it on the consent page', async () => {
+      const { html, info, provider, tokens, client } = await approveAndExchange(
+        'https://mcp.example.com/mcp/gtm',
+      );
+      expect(html).toContain('<strong>Google Tag Manager</strong> MCP');
+      expect(info.resource?.href).toBe('https://mcp.example.com/mcp/gtm');
+      // Refresh keeps the binding.
+      const refreshed = await provider.exchangeRefreshToken(client, tokens.refresh_token!);
+      expect((await provider.verifyAccessToken(refreshed.access_token)).resource?.href).toBe(
+        'https://mcp.example.com/mcp/gtm',
+      );
+    });
+
+    it('binds a token to the Search Console & Analytics endpoint', async () => {
+      const { html, info } = await approveAndExchange('https://mcp.example.com/mcp');
+      expect(html).toContain('<strong>Google Search Console &amp; Analytics</strong> MCP');
+      expect(info.resource?.href).toBe('https://mcp.example.com/mcp');
+    });
+
+    it('rejects resources that are not one of our MCP endpoints', async () => {
+      const { provider, client } = setup();
+      await expect(
+        startAuth(provider, client, [], 'https://mcp.example.com/mcp/unknown'),
+      ).rejects.toThrow(/Unknown resource/);
     });
   });
 });

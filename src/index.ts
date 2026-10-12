@@ -8,7 +8,9 @@ import { startStdio } from './stdio.js';
 
 async function main(): Promise<void> {
   if (existsSync('.env')) process.loadEnvFile('.env');
-  const command = process.argv[2];
+  const command = process.argv
+    .slice(2)
+    .find((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--connector');
   const config = loadConfig();
   const app = createAppContext(config);
 
@@ -20,7 +22,15 @@ async function main(): Promise<void> {
     throw new ConfigError(`Unknown command "${command}". Use "serve" (default) or "google-auth".`);
   }
   if (config.transport === 'http') await startHttp(app);
-  else await startStdio(app);
+  else await startStdio(app, connectorArg() ?? process.env.MCP_CONNECTOR ?? 'search-analytics');
+}
+
+/** `--connector gtm` or `--connector=gtm` */
+function connectorArg(): string | undefined {
+  const args = process.argv.slice(2);
+  const i = args.findIndex((a) => a === '--connector' || a.startsWith('--connector='));
+  if (i === -1) return undefined;
+  return args[i]!.includes('=') ? args[i]!.split('=')[1] : args[i + 1];
 }
 
 main().catch((error: unknown) => {

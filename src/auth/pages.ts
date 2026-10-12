@@ -33,6 +33,8 @@ export function page(title: string, body: string): string {
 export interface ConsentView {
   requestId: string;
   clientName: string;
+  /** Which MCP endpoint is being connected. */
+  mcpTitle: string;
   redirectHost: string;
   writeAvailable: boolean;
   writeRequested: boolean;
@@ -49,7 +51,7 @@ export function consentPage(v: ConsentView): string {
     'Authorize connection',
     `<div class="card">
       <h1>Authorize ${escapeHtml(v.clientName)}</h1>
-      <p class="muted">wants to connect to your Google Search Console &amp; Analytics MCP server. After approval you will be returned to <code>${escapeHtml(v.redirectHost)}</code>.</p>
+      <p class="muted">wants to connect to the <strong>${escapeHtml(v.mcpTitle)}</strong> MCP on your server. After approval you will be returned to <code>${escapeHtml(v.redirectHost)}</code>.</p>
       ${v.error ? `<p class="err">${escapeHtml(v.error)}</p>` : ''}
       <form method="post" action="/oauth/consent">
         <input type="hidden" name="request_id" value="${escapeHtml(v.requestId)}">
@@ -104,7 +106,7 @@ export function messagePage(title: string, message: string, ok = false): string 
 
 export interface DashboardView {
   csrf: string;
-  mcpUrl: string;
+  endpoints: Array<{ title: string; url: string; tools: string }>;
   accessMode: string;
   writeToolsets: string[];
   google: {
@@ -114,7 +116,13 @@ export interface DashboardView {
     missingScopes: string[];
     connectedAt?: string;
   };
-  clients: Array<{ clientId: string; name: string; scopes: string; lastIssued: string }>;
+  clients: Array<{
+    clientId: string;
+    name: string;
+    mcp: string;
+    scopes: string;
+    lastIssued: string;
+  }>;
   audit: Array<{ ts: string; actor: string; tool: string; outcome: string }>;
   flash?: string;
 }
@@ -132,11 +140,11 @@ export function dashboardPage(v: DashboardView): string {
         : `<p class="err">Not connected.</p><form method="post" action="/setup/google/connect"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button class="primary" type="submit">Connect Google</button></form>`;
 
   const clients = v.clients.length
-    ? `<table><tr><th>Client</th><th>Scopes</th><th>Last token</th><th></th></tr>${v.clients
+    ? `<table><tr><th>Client</th><th>MCP</th><th>Scopes</th><th>Last token</th><th></th></tr>${v.clients
         .map(
           (
             c,
-          ) => `<tr><td>${escapeHtml(c.name)}<br><span class="muted">${escapeHtml(c.clientId)}</span></td><td>${escapeHtml(c.scopes)}</td><td>${escapeHtml(c.lastIssued)}</td>
+          ) => `<tr><td>${escapeHtml(c.name)}<br><span class="muted">${escapeHtml(c.clientId)}</span></td><td>${escapeHtml(c.mcp)}</td><td>${escapeHtml(c.scopes)}</td><td>${escapeHtml(c.lastIssued)}</td>
           <td><form method="post" action="/setup/clients/revoke"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><input type="hidden" name="client_id" value="${escapeHtml(c.clientId)}"><button class="danger" type="submit">Revoke</button></form></td></tr>`,
         )
         .join('')}</table>`
@@ -154,8 +162,14 @@ export function dashboardPage(v: DashboardView): string {
   return page(
     'Server setup',
     `${v.flash ? `<div class="card"><p class="ok">${escapeHtml(v.flash)}</p></div>` : ''}
-    <div class="card"><h1>Google Search &amp; Analytics MCP</h1>
-      <p>MCP URL: <code>${escapeHtml(v.mcpUrl)}</code></p>
+    <div class="card"><h1>Google Marketing MCP server</h1>
+      <p class="muted">Add each MCP as its own connector in Claude or ChatGPT:</p>
+      <table><tr><th>MCP</th><th>URL</th><th>Tools</th></tr>${v.endpoints
+        .map(
+          (e) =>
+            `<tr><td>${escapeHtml(e.title)}</td><td><code>${escapeHtml(e.url)}</code></td><td>${escapeHtml(e.tools)}</td></tr>`,
+        )
+        .join('')}</table>
       <p>Access mode: <strong>${escapeHtml(v.accessMode)}</strong>${v.accessMode === 'readwrite' ? ` <span class="muted">(write toolsets: ${v.writeToolsets.map(escapeHtml).join(', ')})</span>` : ''}</p>
       <form method="post" action="/setup/logout"><input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}"><button type="submit">Sign out</button></form></div>
     <div class="card"><h2>Google account</h2>${googleBlock}</div>

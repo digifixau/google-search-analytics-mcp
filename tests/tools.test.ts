@@ -6,8 +6,12 @@ import { connectClient, testConfig, text } from './helpers.js';
 const READ = ['mcp:read'];
 const RW = ['mcp:read', 'mcp:write'];
 
-async function toolNames(env: Record<string, string>, scopes: string[]) {
-  const { client } = await connectClient(testConfig(env), scopes);
+async function toolNames(
+  env: Record<string, string>,
+  scopes: string[],
+  connectorId = 'search-analytics',
+) {
+  const { client } = await connectClient(testConfig(env), scopes, {}, connectorId);
   return (await client.listTools()).tools;
 }
 
@@ -29,7 +33,7 @@ describe('tool exposure', () => {
   it('read-write server exposes write tools to write tokens, limited by WRITE_TOOLSETS', async () => {
     const all = await toolNames({ ACCESS_MODE: 'readwrite' }, RW);
     const writes = all.filter((t) => !t.annotations?.readOnlyHint);
-    expect(writes.length).toBe(34);
+    expect(writes.length).toBe(22);
     expect(writes.every((t) => t.description?.startsWith('[WRITE]'))).toBe(true);
     expect(all.find((t) => t.name === 'gsc_delete_site')?.annotations?.destructiveHint).toBe(true);
 
@@ -343,28 +347,44 @@ describe('gtm', () => {
     } as unknown as GoogleApis;
   }
 
-  it('is hidden when ENABLED_SERVICES excludes gtm', async () => {
-    const names = (
-      await toolNames({ ACCESS_MODE: 'readwrite', ENABLED_SERVICES: 'gsc,ga4' }, RW)
-    ).map((t) => t.name);
-    expect(names.some((n) => n.startsWith('gtm_'))).toBe(false);
-    expect(names).toContain('gsc_list_sites');
+  it('lives on its own connector, separate from Search Console & Analytics', async () => {
+    const sa = (await toolNames({ ACCESS_MODE: 'readwrite' }, RW)).map((t) => t.name);
+    expect(sa).toHaveLength(46);
+    expect(sa.some((n) => n.startsWith('gtm_'))).toBe(false);
+    expect(sa).toEqual(expect.arrayContaining(['search', 'fetch', 'gsc_list_sites']));
+
+    const gtm = (await toolNames({ ACCESS_MODE: 'readwrite' }, RW, 'gtm')).map((t) => t.name);
+    expect(gtm).toHaveLength(22);
+    expect(gtm.every((n) => n.startsWith('gtm_'))).toBe(true);
+  });
+
+  it('has no tools when ENABLED_SERVICES excludes gtm', async () => {
+    const gtm = await toolNames(
+      { ACCESS_MODE: 'readwrite', ENABLED_SERVICES: 'gsc,ga4' },
+      RW,
+      'gtm',
+    );
+    expect(gtm).toHaveLength(0);
   });
 
   it('exposes publish by default in read-write, never in read-only, and drops it via WRITE_TOOLSETS', async () => {
-    expect((await toolNames({ ACCESS_MODE: 'readwrite' }, RW)).map((t) => t.name)).toContain(
+    expect((await toolNames({ ACCESS_MODE: 'readwrite' }, RW, 'gtm')).map((t) => t.name)).toContain(
       'gtm_publish_version',
     );
-    const ro = await toolNames({ ACCESS_MODE: 'readonly' }, RW);
+    const ro = await toolNames({ ACCESS_MODE: 'readonly' }, RW, 'gtm');
     expect(ro.map((t) => t.name)).toContain('gtm_audit_container');
     expect(ro.some((t) => t.name.startsWith('gtm_') && !t.annotations?.readOnlyHint)).toBe(false);
-    const noPublish = await toolNames({ ACCESS_MODE: 'readwrite', WRITE_TOOLSETS: 'gtm' }, RW);
+    const noPublish = await toolNames(
+      { ACCESS_MODE: 'readwrite', WRITE_TOOLSETS: 'gtm' },
+      RW,
+      'gtm',
+    );
     expect(noPublish.map((t) => t.name)).toContain('gtm_create_tag');
     expect(noPublish.map((t) => t.name)).not.toContain('gtm_publish_version');
   });
 
   it('audits orphan tags, unused triggers/variables and unknown measurement IDs', async () => {
-    const { client } = await connectClient(testConfig(), READ, gtmApis());
+    const { client } = await connectClient(testConfig(), READ, gtmApis(), 'gtm');
     const out = text(
       await client.callTool({ name: 'gtm_audit_container', arguments: { path: CONTAINER } }),
     );
@@ -382,6 +402,7 @@ describe('gtm', () => {
       testConfig({ ACCESS_MODE: 'readwrite' }),
       RW,
       apis,
+      'gtm',
     );
     const bad = await client.callTool({
       name: 'gtm_publish_version',
@@ -410,7 +431,7 @@ describe('gtm', () => {
       ACCESS_MODE: 'readwrite',
       WRITE_ALLOWED_GTM_CONTAINERS: 'GTM-OTHER1',
     });
-    const { client } = await connectClient(config, RW, apis);
+    const { client } = await connectClient(config, RW, apis, 'gtm');
     const res = await client.callTool({
       name: 'gtm_create_tag',
       arguments: { path: WS, resource: { name: 'x', type: 'html' } },

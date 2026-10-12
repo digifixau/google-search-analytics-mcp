@@ -10,7 +10,15 @@ import type { AppContext } from '../app.js';
 import { MCP_SCOPES } from '../config.js';
 import { OwnerOAuthProvider } from '../auth/provider.js';
 import { dashboardPage, loginPage, messagePage, redirectPage } from '../auth/pages.js';
-import { buildMcpServer, SERVER_NAME, SERVER_VERSION } from '../mcp/server.js';
+import {
+  comparableResource,
+  connectorUrl,
+  enabledConnectors,
+  type ConnectorDef,
+} from '../mcp/connectors.js';
+import { buildMcpServer, SERVER_NAME, SERVER_VERSION, toolInConnector } from '../mcp/server.js';
+import { allTools } from '../tools/index.js';
+import { isToolEnabled } from '../tools/registry.js';
 import { randomToken } from '../store/crypto.js';
 
 const SESSION_COOKIE = 'gsa_setup';
@@ -39,7 +47,10 @@ export function createHttpApp(app: AppContext): express.Express {
   const { config } = app;
   const publicUrl = config.publicUrl!;
   const provider = new OwnerOAuthProvider(config, app.db);
-  const mcpUrl = new URL('/mcp', publicUrl);
+  const connectors = enabledConnectors(config);
+  if (connectors.length === 0) throw new Error('ENABLED_SERVICES leaves no MCP endpoint enabled');
+  const scopesSupported =
+    config.accessMode === 'readwrite' ? [MCP_SCOPES.read, MCP_SCOPES.write] : [MCP_SCOPES.read];
   const sessions = new Map<string, { csrf: string; expiresAt: number }>();
   const googleStates = new Map<string, number>();
 
@@ -58,7 +69,7 @@ export function createHttpApp(app: AppContext): express.Express {
     res.json({
       name: SERVER_NAME,
       version: SERVER_VERSION,
-      mcp: mcpUrl.href,
+      mcp: Object.fromEntries(connectors.map((c) => [c.id, connectorUrl(c, publicUrl).href])),
       accessMode: config.accessMode,
       setup: new URL('/setup', publicUrl).href,
     });
@@ -70,10 +81,10 @@ export function createHttpApp(app: AppContext): express.Express {
       provider,
       issuerUrl: publicUrl,
       baseUrl: publicUrl,
-      resourceServerUrl: mcpUrl,
-      scopesSupported:
-        config.accessMode === 'readwrite' ? [MCP_SCOPES.read, MCP_SCOPES.write] : [MCP_SCOPES.read],
-      resourceName: 'Google Search Console & Analytics MCP',
+      // The SDK advertises one protected resource; the other connectors are added below.
+      resourceServerUrl: connectorUrl(connectors[0]!, publicUrl),
+      scopesSupported,
+      resourceName: `${connectors[0]!.title} MCP`,
       clientRegistrationOptions: { clientSecretExpirySeconds: 0 },
     }),
   );
@@ -89,39 +100,8 @@ export function createHttpApp(app: AppContext): express.Express {
     }
   });
 
-  // ---- MCP endpoint (stateless Streamable HTTP) ----
-  const bearer = requireBearerAuth({
-    verifier: provider,
-    requiredScopes: [MCP_SCOPES.read],
-    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl),
-  });
+  // ---- MCP endpoints (stateless Streamable HTTP), one per connector ----
   const hostCheck = hostHeaderValidation([publicUrl.hostname, 'localhost', '127.0.0.1']);
-
-  server.post('/mcp', hostCheck, bearer, express.json({ limit: '1mb' }), async (req, res) => {
-    const auth = req.auth!;
-    const mcp = buildMcpServer(app, { scopes: auth.scopes, actor: auth.clientId });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    res.on('close', () => {
-      void transport.close();
-      void mcp.close();
-    });
-    try {
-      await mcp.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch (error) {
-      console.error('[mcp] request failed', error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: { code: -32603, message: 'Internal server error' },
-          id: null,
-        });
-      }
-    }
-  });
   const methodNotAllowed = (_req: Request, res: Response) => {
     res
       .status(405)
@@ -132,8 +112,83 @@ export function createHttpApp(app: AppContext): express.Express {
         id: null,
       });
   };
-  server.get('/mcp', methodNotAllowed);
-  server.delete('/mcp', methodNotAllowed);
+
+  const mountConnector = (connector: ConnectorDef, index: number) => {
+    const url = connectorUrl(connector, publicUrl);
+    const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(url);
+
+    if (index > 0) {
+      // RFC 9728 metadata for the extra endpoints (the first one is served by mcpAuthRouter).
+      server.get(new URL(resourceMetadataUrl).pathname, (_req, res) => {
+        res.json({
+          resource: url.href,
+          authorization_servers: [publicUrl.href],
+          scopes_supported: scopesSupported,
+          resource_name: `${connector.title} MCP`,
+        });
+      });
+    }
+
+    const bearer = requireBearerAuth({
+      verifier: provider,
+      requiredScopes: [MCP_SCOPES.read],
+      resourceMetadataUrl,
+    });
+    // Tokens approved for another MCP endpoint are rejected; tokens without a resource work everywhere.
+    const audience = (req: Request, res: Response, next: NextFunction) => {
+      const resource = req.auth?.resource;
+      if (resource && comparableResource(resource) !== comparableResource(url)) {
+        res
+          .status(401)
+          .set(
+            'WWW-Authenticate',
+            `Bearer error="invalid_token", error_description="Token was issued for a different MCP endpoint", resource_metadata="${resourceMetadataUrl}"`,
+          )
+          .json({
+            error: 'invalid_token',
+            error_description: 'Token was issued for a different MCP endpoint',
+          });
+        return;
+      }
+      next();
+    };
+
+    server.post(
+      connector.path,
+      hostCheck,
+      bearer,
+      audience,
+      express.json({ limit: '1mb' }),
+      async (req, res) => {
+        const auth = req.auth!;
+        const mcp = buildMcpServer(app, { scopes: auth.scopes, actor: auth.clientId }, connector);
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        });
+        res.on('close', () => {
+          void transport.close();
+          void mcp.close();
+        });
+        try {
+          await mcp.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+        } catch (error) {
+          console.error(`[mcp:${connector.id}] request failed`, error);
+          if (!res.headersSent) {
+            res.status(500).json({
+              jsonrpc: '2.0',
+              error: { code: -32603, message: 'Internal server error' },
+              id: null,
+            });
+          }
+        }
+      },
+    );
+    server.get(connector.path, methodNotAllowed);
+    server.delete(connector.path, methodNotAllowed);
+  };
+  connectors.forEach(mountConnector);
 
   // ---- Owner setup dashboard ----
   const getSession = (req: Request) => {
@@ -167,7 +222,18 @@ export function createHttpApp(app: AppContext): express.Express {
       200,
       dashboardPage({
         csrf: session.csrf,
-        mcpUrl: mcpUrl.href,
+        endpoints: connectors.map((c) => {
+          const tools = allTools.filter((t) => toolInConnector(t, c));
+          const count = (scopes: string[]) =>
+            tools.filter((t) => isToolEnabled(t, config, scopes)).length;
+          const rw = count([MCP_SCOPES.read, MCP_SCOPES.write]);
+          const ro = count([MCP_SCOPES.read]);
+          return {
+            title: c.title,
+            url: connectorUrl(c, publicUrl).href,
+            tools: rw === ro ? `${ro}` : `${ro} read-only / ${rw} read+write`,
+          };
+        }),
         accessMode: config.accessMode,
         writeToolsets: config.writeToolsets,
         google: status,
@@ -261,8 +327,11 @@ export async function startHttp(app: AppContext): Promise<void> {
   });
   const status = app.googleAuth.status();
   console.error(
-    `[gsa-mcp] HTTP server listening on ${app.config.host}:${app.config.port} — MCP endpoint ${new URL('/mcp', app.config.publicUrl).href} (${app.config.accessMode})`,
+    `[gsa-mcp] HTTP server listening on ${app.config.host}:${app.config.port} (${app.config.accessMode})`,
   );
+  for (const c of enabledConnectors(app.config)) {
+    console.error(`[gsa-mcp]   ${c.title} MCP: ${connectorUrl(c, app.config.publicUrl!).href}`);
+  }
   if (!status.connected) {
     console.error(
       `[gsa-mcp] Google is not connected yet: open ${new URL('/setup', app.config.publicUrl).href}`,

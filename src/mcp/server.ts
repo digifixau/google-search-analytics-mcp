@@ -4,9 +4,10 @@ import { MCP_SCOPES, type Config } from '../config.js';
 import type { GoogleApisProvider } from '../google/clients.js';
 import type { AuditLog } from '../store/db.js';
 import { allTools } from '../tools/index.js';
-import { isToolEnabled, type ToolContext, type ToolDef } from '../tools/registry.js';
+import { isToolEnabled, serviceOf, type ToolContext, type ToolDef } from '../tools/registry.js';
 import { describeError } from '../util/errors.js';
 import type { AccessPolicy } from '../util/policy.js';
+import { CONNECTORS, connectorInstructions, type ConnectorDef } from './connectors.js';
 
 export const SERVER_NAME = 'google-search-analytics-mcp';
 export const SERVER_VERSION = '0.1.0';
@@ -24,42 +25,30 @@ export interface Grant {
   actor: string;
 }
 
-function instructions(config: Config, canWrite: boolean): string {
-  const lines = [
-    'Google Search Console (GSC) and Google Analytics 4 (GA4) data for the owner of this server.',
-    'Start with gsc_list_sites or ga4_list_properties to discover the exact siteUrl / propertyId values.',
-    'GSC siteUrl is either a URL-prefix property ("https://example.com/") or a domain property ("sc-domain:example.com").',
-    'GSC data lags ~2-3 days; GA4 supports relative dates like "28daysAgo", "yesterday", "today".',
-    'For GA4, call ga4_get_metadata to find valid dimension/metric API names (including custom definitions).',
-  ];
-  if (config.enabledServices.includes('gtm')) {
-    lines.push(
-      'Google Tag Manager (GTM): start with gtm_list_containers; gtm_audit_container gives a quick health check. Edits happen in a workspace, gtm_create_version snapshots it, and gtm_publish_version makes it live on the website.',
-    );
-  }
-  if (canWrite) {
-    lines.push(
-      'This connection has WRITE access. Write tools change live Google configuration: confirm the exact change with the user before calling them.',
-    );
-  } else {
-    lines.push(
-      config.accessMode === 'readonly'
-        ? 'The server runs in READ-ONLY mode: no changes can be made.'
-        : 'This connection was granted read-only access: no changes can be made.',
-    );
-  }
-  return lines.join('\n');
+/** True if the tool belongs to this connector (by service, or the shared search/fetch tools). */
+export function toolInConnector(def: ToolDef, connector: ConnectorDef): boolean {
+  const service = serviceOf(def.toolset);
+  return service ? connector.services.includes(service) : connector.includeCompat;
 }
 
-/** Builds an MCP server exposing only the tools this grant may use. */
-export function buildMcpServer(deps: ServerDeps, grant: Grant): McpServer {
+/** Builds an MCP server for one connector, exposing only the tools this grant may use. */
+export function buildMcpServer(
+  deps: ServerDeps,
+  grant: Grant,
+  connector: ConnectorDef = CONNECTORS[0]!,
+): McpServer {
   const { config } = deps;
-  const tools = (deps.tools ?? allTools).filter((t) => isToolEnabled(t, config, grant.scopes));
+  const tools = (deps.tools ?? allTools).filter(
+    (t) => toolInConnector(t, connector) && isToolEnabled(t, config, grant.scopes),
+  );
   const canWrite = tools.some((t) => t.access === 'write');
 
   const server = new McpServer(
-    { name: SERVER_NAME, version: SERVER_VERSION },
-    { instructions: instructions(config, canWrite), capabilities: { tools: {} } },
+    { name: connector.serverName, version: SERVER_VERSION },
+    {
+      instructions: connectorInstructions(connector, config, canWrite),
+      capabilities: { tools: {} },
+    },
   );
 
   const ctx: ToolContext = { apis: deps.apis, policy: deps.policy, config, actor: grant.actor };
