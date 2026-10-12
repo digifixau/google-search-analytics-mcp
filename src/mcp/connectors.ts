@@ -17,6 +17,11 @@ export interface ConnectorDef {
   /** Human-readable name (consent page, /setup, protected resource metadata). */
   title: string;
   services: Service[];
+  /**
+   * How this MCP reaches Google: a per-MCP Google account ('google': OAuth or service account), or a
+   * server-side API key from the environment ('api_key': no sign-in, nothing to connect on /setup).
+   */
+  authKind: 'google' | 'api_key';
   /** Include the ChatGPT deep-research `search`/`fetch` tools. */
   includeCompat: boolean;
   instructions: string[];
@@ -36,6 +41,7 @@ export const CONNECTORS: ConnectorDef[] = [
     serverName: 'google-search-analytics-mcp',
     title: 'Google Search Console & Analytics',
     services: ['gsc', 'ga4'],
+    authKind: 'google',
     includeCompat: true,
     instructions: [
       'Google Search Console (GSC) and Google Analytics 4 (GA4) data for the owner of this server.',
@@ -51,6 +57,7 @@ export const CONNECTORS: ConnectorDef[] = [
     serverName: 'google-tag-manager-mcp',
     title: 'Google Tag Manager',
     services: ['gtm'],
+    authKind: 'google',
     includeCompat: false,
     instructions: [
       'Google Tag Manager (GTM) containers for the owner of this server.',
@@ -64,6 +71,7 @@ export const CONNECTORS: ConnectorDef[] = [
     serverName: 'youtube-analytics-mcp',
     title: 'YouTube Analytics',
     services: ['youtube'],
+    authKind: 'google',
     includeCompat: false,
     instructions: [
       'YouTube channel and video analytics for the owner of this server.',
@@ -78,11 +86,26 @@ export const CONNECTORS: ConnectorDef[] = [
     serverName: 'google-merchant-center-mcp',
     title: 'Google Merchant Center',
     services: ['merchant'],
+    authKind: 'google',
     includeCompat: false,
     instructions: [
       'Google Merchant Center (shopping feeds) for the owner of this server.',
       'Start with merchant_list_accounts. merchant_account_issues and merchant_product_issues explain disapprovals; merchant_performance_report shows clicks and impressions from free and paid listings.',
       'If calls fail with "not registered", the Google Cloud project must be registered once per account (merchant_register_gcp_project).',
+    ],
+  },
+  {
+    id: 'places',
+    path: '/mcp/places',
+    serverName: 'google-places-mcp',
+    title: 'Google Places',
+    services: ['places'],
+    authKind: 'api_key',
+    includeCompat: false,
+    instructions: [
+      'Google Places (businesses, addresses, ratings, reviews and photos). Read-only.',
+      'Use places_search_text for "what is there / who ranks for X in Y" questions and places_search_nearby around a point; both return place IDs for places_get_place, places_get_reviews and places_get_photo.',
+      'Every call is billed by Google. The detail level (basic, standard, full) decides which fields are requested, so start with the smallest level that answers the question.',
     ],
   },
 ];

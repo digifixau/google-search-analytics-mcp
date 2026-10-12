@@ -18,7 +18,7 @@ describe('config', () => {
       'youtube',
       'merchant',
     ]);
-    expect(c.enabledServices).toEqual(['gsc', 'ga4', 'gtm', 'youtube', 'merchant']);
+    expect(c.enabledServices).toEqual(['gsc', 'ga4', 'gtm', 'youtube', 'merchant', 'places']);
   });
 
   it('requires PUBLIC_URL (https) and ADMIN_PASSWORD for http', () => {
@@ -91,6 +91,38 @@ describe('config', () => {
         GOOGLE_OWNER_EMAIL_TAGS: 'x@y.z',
       }),
     ).toThrow(/Unknown MCP in GOOGLE_OWNER_EMAIL_TAGS/);
+  });
+
+  it('treats Places as an API-key MCP with no Google account settings', () => {
+    // A missing key must not stop an existing deployment from starting after an upgrade.
+    expect(() => testConfig()).not.toThrow();
+    expect(testConfig({ GOOGLE_PLACES_API_KEY: 'abc' }).google.placesApiKey).toBe('abc');
+    // No account, client or encryption settings are needed when only Places is enabled.
+    expect(() =>
+      testConfig({
+        ENABLED_SERVICES: 'places',
+        GOOGLE_CLIENT_ID: '',
+        GOOGLE_CLIENT_SECRET: '',
+        ENCRYPTION_KEY: '',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      testConfig({
+        TRANSPORT: 'http',
+        PUBLIC_URL: 'https://mcp.example.com',
+        ADMIN_PASSWORD: 'a'.repeat(16),
+        ENABLED_SERVICES: 'places',
+      }),
+    ).not.toThrow();
+    // Places has no Google account, so per-MCP account overrides for it are rejected.
+    expect(() => testConfig({ GOOGLE_OWNER_EMAIL_PLACES: 'x@example.com' })).toThrow(
+      /Unknown MCP in GOOGLE_OWNER_EMAIL_PLACES/,
+    );
+    expect(() =>
+      testConfig({ GOOGLE_AUTH_MODE: 'service_account', ENABLED_SERVICES: 'places' }),
+    ).not.toThrow();
+    // Places never requests Google OAuth scopes.
+    expect(requiredGoogleScopes(testConfig({ ENABLED_SERVICES: 'places' }))).toEqual([]);
   });
 
   it('accepts a service account key per MCP', () => {

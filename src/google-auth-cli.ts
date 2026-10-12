@@ -22,6 +22,12 @@ export async function runGoogleAuthCli(app: AppContext, connectionId: string): P
     );
   }
   const connection = app.google.get(connectionId);
+  if (connection.mode === 'api_key') {
+    console.error(
+      `The ${connection.title} MCP uses an API key: there is no Google account to connect.`,
+    );
+    return;
+  }
   const { codeVerifier, codeChallenge } = await new OAuth2Client().generateCodeVerifierAsync();
   const port = Number(process.env.GOOGLE_AUTH_PORT ?? 53682);
   const redirectUri = `http://localhost:${port}/oauth/google/callback`;

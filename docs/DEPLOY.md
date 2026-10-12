@@ -10,8 +10,9 @@ The main path uses **Coolify**. If you use another host, [section 7](#7-other-ho
 Claude / ChatGPT ──HTTPS──▶ https://mcp.example.com/mcp      ──▶ Google Search Console + GA4
                  ├─HTTPS──▶ https://mcp.example.com/mcp/gtm      ──▶ Google Tag Manager
                  ├─HTTPS──▶ https://mcp.example.com/mcp/youtube  ──▶ YouTube Analytics
-                 └─HTTPS──▶ https://mcp.example.com/mcp/merchant ──▶ Google Merchant Center
-                             (your Coolify server)          (as your Google account)
+                 ├─HTTPS──▶ https://mcp.example.com/mcp/merchant ──▶ Google Merchant Center
+                 └─HTTPS──▶ https://mcp.example.com/mcp/places   ──▶ Google Places
+                             (your Coolify server)          (as your Google account(s); Places uses an API key)
 ```
 
 ---
@@ -63,6 +64,7 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
 - Tag Manager API
 - YouTube Analytics API and YouTube Data API v3
 - Merchant API
+- Places API (New), and billing must be enabled on the project (Places is billed per call)
 - Web Search Indexing API (only if you'll use `indexing_publish`)
 
 ### 2.2a OAuth mode (recommended)
@@ -87,6 +89,19 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
    - **Merchant Center** → Settings → People and access → add the email with **Standard** access (Admin is needed once for `merchant_register_gcp_project`).
    - **YouTube** doesn't support service accounts. Use OAuth mode if you need the YouTube MCP, or set `ENABLED_SERVICES` without `youtube`.
 3. Encode the key for the env var: `base64 -w0 key.json` (macOS: `base64 -i key.json`).
+
+### 2.3 Places API key (only for the Places MCP)
+
+Places doesn't use a Google sign-in or service account. It uses an API key that stays on your server.
+
+1. **APIs & Services → Credentials → Create credentials → API key**.
+2. Open the key and restrict it:
+   - **API restrictions → Restrict key → Places API (New)** only.
+   - **Application restrictions → IP addresses**, if your server has a fixed outbound IP (leave as _None_ otherwise; HTTP-referrer restrictions don't work for a server).
+3. Copy the key for step 3.2 (`GOOGLE_PLACES_API_KEY`).
+4. To cap spending, open **APIs & Services → Places API (New) → Quotas & System Limits** and lower the daily request limits, and add a budget alert under **Billing → Budgets & alerts**.
+
+Skip this step if you don't want the Places MCP (set `ENABLED_SERVICES` without `places`, or just leave the key unset: the Places card then says "API key missing" and the other MCPs are unaffected).
 
 ---
 
@@ -128,6 +143,9 @@ GOOGLE_OWNER_EMAIL=you@example.com
 # GOOGLE_OWNER_EMAIL_MERCHANT=shop@client.com
 # GOOGLE_OWNER_EMAIL_SEARCH_ANALYTICS=seo@example.com
 
+# Places MCP (API key from step 2.3)
+GOOGLE_PLACES_API_KEY=<from step 2.3>
+
 # …or service account mode (instead of the four lines above)
 # GOOGLE_AUTH_MODE=service_account
 # GOOGLE_SERVICE_ACCOUNT_JSON=<base64 from step 2.2b>
@@ -147,6 +165,7 @@ Click **Deploy** and watch **Logs**. A healthy start ends with:
 [gsa-mcp]   Google Tag Manager MCP: https://mcp.example.com/mcp/gtm — Google NOT connected
 [gsa-mcp]   YouTube Analytics MCP: https://mcp.example.com/mcp/youtube — Google NOT connected
 [gsa-mcp]   Google Merchant Center MCP: https://mcp.example.com/mcp/merchant — Google NOT connected
+[gsa-mcp]   Google Places MCP: https://mcp.example.com/mcp/places — API key configured
 [gsa-mcp] Connect Google accounts at https://mcp.example.com/setup
 ```
 
@@ -165,6 +184,8 @@ Each MCP has its own Google connection, so each can use a different Google accou
 
 Each card also has **Reconnect** (switch account or grant new permissions) and **Disconnect**. Disconnect only removes that MCP's stored token. It doesn't revoke access at Google, because that would also break other MCPs on the same account. To revoke completely, remove the app at <https://myaccount.google.com/permissions>, which affects **every** MCP connected with that account.
 
+The **Google Places** card has nothing to connect. It says **API key configured** or **API key missing** (set `GOOGLE_PLACES_API_KEY` in step 3.2 and redeploy).
+
 In service-account mode, each card shows the service account email instead and there's nothing to click. `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>` gives one MCP its own service account.
 
 ---
@@ -179,6 +200,7 @@ The app serves several MCPs. Add **each one you want as a separate connector**:
 | Google Tag Manager                | `https://mcp.example.com/mcp/gtm`      |
 | YouTube Analytics                 | `https://mcp.example.com/mcp/youtube`  |
 | Google Merchant Center            | `https://mcp.example.com/mcp/merchant` |
+| Google Places                     | `https://mcp.example.com/mcp/places`   |
 
 | App                               | Steps                                                                                                                                                                  |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -205,6 +227,8 @@ Repeat for each MCP. Every connector is approved on its own, so read/write can d
 
   This runs `merchant_register_gcp_project` once. Afterwards the connection can be read-only if you prefer.
 
+- **Places:** nothing to connect on `/setup`. Places is read-only and every call is billed by Google, so keep the quota cap from step 2.3 in place. Ask for the cheapest detail level that answers the question ("basic" for lists of places, "full" only for one place at a time).
+
 ## 6. Check it works
 
 Ask your AI app:
@@ -214,6 +238,8 @@ Ask your AI app:
 Then try:
 
 > "Which of my Merchant Center products are disapproved, and why?" (Merchant MCP)
+>
+> "Find the 10 best-rated fridge repair businesses in Melbourne and give me their websites and phone numbers." (Places MCP)
 >
 > "What were my top 10 YouTube videos by watch time last month, and where did their traffic come from?" (YouTube MCP)
 >
@@ -288,22 +314,26 @@ What the migration does **not** do: it never deletes, rewrites or revokes the or
 
 ## Troubleshooting
 
-| Symptom                                                        | Fix                                                                                                                                                                                                                                                               |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Merchant tools say "not registered"                            | Run `merchant_register_gcp_project` once per Merchant Center account (section 5.1).                                                                                                                                                                               |
-| YouTube shows the wrong channel, or "No YouTube channel found" | Click **Reconnect** on the YouTube card and choose the channel (or Brand Account) at Google's prompt.                                                                                                                                                             |
-| Container exits with `Configuration error: …`                  | Fix the named variable. Common causes: `PUBLIC_URL` not https, `ADMIN_PASSWORD` under 16 characters, missing `GOOGLE_OWNER_EMAIL`, an MCP left without an allowed account (`GOOGLE_OWNER_EMAIL_<MCP>` for: …), or a misspelled `GOOGLE_OWNER_EMAIL_<MCP>` suffix. |
-| Google says `redirect_uri_mismatch`                            | The OAuth client's redirect URI must be exactly `https://<your domain>/oauth/google/callback`.                                                                                                                                                                    |
-| "Signed in as …, which is not allowed for the … MCP"           | You picked an account not listed for that MCP. Choose an allowed account, or add it to `GOOGLE_OWNER_EMAIL` / `GOOGLE_OWNER_EMAIL_<MCP>` and redeploy.                                                                                                            |
-| "The … MCP has no Google account connected yet"                | Click **Connect** on that MCP's card on `/setup`. Each MCP is connected separately.                                                                                                                                                                               |
-| "Finish the Google sign-in in the same browser session…"       | Start the connection from `/setup` and finish it in the same browser, within 10 minutes. Don't reuse an old Google tab.                                                                                                                                           |
-| Disconnected one MCP but the account still shows at Google     | Expected: Disconnect only deletes this server's token for that MCP. Revoke at <https://myaccount.google.com/permissions> (affects every MCP on that account).                                                                                                     |
-| "Google did not return a refresh token"                        | Remove the app at <https://myaccount.google.com/permissions> and click **Connect** on the card again (then reconnect other MCPs that used that account).                                                                                                          |
-| "Google rejected this MCP's stored refresh token"              | That MCP's token was revoked or expired. Click **Reconnect** on its card. If the consent screen is still in _Testing_, publish it (step 2.2a) first, or this repeats weekly.                                                                                      |
-| "A required Google API is disabled"                            | Enable the API named in the message (step 2.1), wait a minute, retry.                                                                                                                                                                                             |
-| 403 "did not grant the scope this tool needs"                  | You switched to `readwrite` or changed `WRITE_TOOLSETS`. Click **Reconnect** on that MCP's card on `/setup`.                                                                                                                                                      |
-| 403 "does not have sufficient permission"                      | The Google account or service account lacks access to that property in Search Console or GA4.                                                                                                                                                                     |
-| Claude/ChatGPT can't connect or loops on login                 | Check that `PUBLIC_URL` exactly matches the domain the app uses (no trailing path), and that `https://<domain>/.well-known/oauth-authorization-server` loads in a browser.                                                                                        |
-| "Too many attempts" on the approval page                       | Brute-force lockout. Wait 15 minutes. The logs show `[security]` lines with the source IPs.                                                                                                                                                                       |
-| Every redeploy asks to connect Google again                    | The `/data` persistent volume is missing (step 3.1), or `ENCRYPTION_KEY` changed.                                                                                                                                                                                 |
-| Write tools don't appear in the app                            | `ACCESS_MODE` is `readonly`, or that connection was approved without **Make changes**. Reconnect it and tick the box.                                                                                                                                             |
+| Symptom                                                          | Fix                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Places tools say "no API key" or the card says "API key missing" | Set `GOOGLE_PLACES_API_KEY` (step 2.3) in Coolify and redeploy.                                                                                                                                                                                                   |
+| Places: "Google rejected the Places API key"                     | The key is wrong, deleted or expired. Create a new one (step 2.3) and update `GOOGLE_PLACES_API_KEY`.                                                                                                                                                             |
+| Places: "key's restrictions block this server"                   | In Google Cloud, set the key's API restriction to _Places API (New)_ and its application restriction to _None_ or your server's outbound IP.                                                                                                                      |
+| Places: "Places API (New) has not been used" or "billing"        | Enable **Places API (New)** and billing on the Cloud project (step 2.1), wait a minute, retry.                                                                                                                                                                    |
+| Merchant tools say "not registered"                              | Run `merchant_register_gcp_project` once per Merchant Center account (section 5.1).                                                                                                                                                                               |
+| YouTube shows the wrong channel, or "No YouTube channel found"   | Click **Reconnect** on the YouTube card and choose the channel (or Brand Account) at Google's prompt.                                                                                                                                                             |
+| Container exits with `Configuration error: …`                    | Fix the named variable. Common causes: `PUBLIC_URL` not https, `ADMIN_PASSWORD` under 16 characters, missing `GOOGLE_OWNER_EMAIL`, an MCP left without an allowed account (`GOOGLE_OWNER_EMAIL_<MCP>` for: …), or a misspelled `GOOGLE_OWNER_EMAIL_<MCP>` suffix. |
+| Google says `redirect_uri_mismatch`                              | The OAuth client's redirect URI must be exactly `https://<your domain>/oauth/google/callback`.                                                                                                                                                                    |
+| "Signed in as …, which is not allowed for the … MCP"             | You picked an account not listed for that MCP. Choose an allowed account, or add it to `GOOGLE_OWNER_EMAIL` / `GOOGLE_OWNER_EMAIL_<MCP>` and redeploy.                                                                                                            |
+| "The … MCP has no Google account connected yet"                  | Click **Connect** on that MCP's card on `/setup`. Each MCP is connected separately.                                                                                                                                                                               |
+| "Finish the Google sign-in in the same browser session…"         | Start the connection from `/setup` and finish it in the same browser, within 10 minutes. Don't reuse an old Google tab.                                                                                                                                           |
+| Disconnected one MCP but the account still shows at Google       | Expected: Disconnect only deletes this server's token for that MCP. Revoke at <https://myaccount.google.com/permissions> (affects every MCP on that account).                                                                                                     |
+| "Google did not return a refresh token"                          | Remove the app at <https://myaccount.google.com/permissions> and click **Connect** on the card again (then reconnect other MCPs that used that account).                                                                                                          |
+| "Google rejected this MCP's stored refresh token"                | That MCP's token was revoked or expired. Click **Reconnect** on its card. If the consent screen is still in _Testing_, publish it (step 2.2a) first, or this repeats weekly.                                                                                      |
+| "A required Google API is disabled"                              | Enable the API named in the message (step 2.1), wait a minute, retry.                                                                                                                                                                                             |
+| 403 "did not grant the scope this tool needs"                    | You switched to `readwrite` or changed `WRITE_TOOLSETS`. Click **Reconnect** on that MCP's card on `/setup`.                                                                                                                                                      |
+| 403 "does not have sufficient permission"                        | The Google account or service account lacks access to that property in Search Console or GA4.                                                                                                                                                                     |
+| Claude/ChatGPT can't connect or loops on login                   | Check that `PUBLIC_URL` exactly matches the domain the app uses (no trailing path), and that `https://<domain>/.well-known/oauth-authorization-server` loads in a browser.                                                                                        |
+| "Too many attempts" on the approval page                         | Brute-force lockout. Wait 15 minutes. The logs show `[security]` lines with the source IPs.                                                                                                                                                                       |
+| Every redeploy asks to connect Google again                      | The `/data` persistent volume is missing (step 3.1), or `ENCRYPTION_KEY` changed.                                                                                                                                                                                 |
+| Write tools don't appear in the app                              | `ACCESS_MODE` is `readonly`, or that connection was approved without **Make changes**. Reconnect it and tick the box.                                                                                                                                             |

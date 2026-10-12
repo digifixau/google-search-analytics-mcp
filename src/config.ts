@@ -13,7 +13,7 @@ export const WRITE_TOOLSETS = [
 ] as const;
 export type WriteToolset = (typeof WRITE_TOOLSETS)[number];
 
-export const SERVICES = ['gsc', 'ga4', 'gtm', 'youtube', 'merchant'] as const;
+export const SERVICES = ['gsc', 'ga4', 'gtm', 'youtube', 'merchant', 'places'] as const;
 export type Service = (typeof SERVICES)[number];
 
 const csv = z
@@ -63,6 +63,7 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: optionalString,
   GOOGLE_OWNER_EMAIL: optionalString,
   GOOGLE_SERVICE_ACCOUNT_JSON: optionalString,
+  GOOGLE_PLACES_API_KEY: optionalString,
 
   ALLOWED_GSC_SITES: csv,
   ALLOWED_GA4_PROPERTIES: csv,
@@ -112,6 +113,8 @@ export interface Config {
     serviceAccountJson?: string;
     /** Per-MCP overrides from GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>, keyed by connector id. */
     connectionServiceAccounts: Record<string, string>;
+    /** API key for the Places MCP (GOOGLE_PLACES_API_KEY). Server-side only; never shown or sent to clients. */
+    placesApiKey?: string;
   };
   allowlists: {
     gscSites: string[];
@@ -231,6 +234,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       connectionServiceAccounts: Object.fromEntries(
         perConnection(env, 'GOOGLE_SERVICE_ACCOUNT_JSON_'),
       ),
+      placesApiKey: e.GOOGLE_PLACES_API_KEY,
     },
     allowlists: {
       gscSites: e.ALLOWED_GSC_SITES,
@@ -281,20 +285,27 @@ export function serviceAccountFor(config: Config, connectionId: string): string 
 }
 
 function validateConfig(config: Config): void {
-  const connections = enabledConnectors(config).map((c) => c.id);
+  // MCPs that sign in with a Google account. API-key MCPs (Places) have no account or service account.
+  const googleConnectors = CONNECTORS.filter((c) => c.authKind === 'google');
+  const connections = enabledConnectors(config)
+    .filter((c) => c.authKind === 'google')
+    .map((c) => c.id);
   // A typo in a per-MCP override would silently fall back to the shared value, so reject it.
   for (const [prefix, overrides] of [
     ['GOOGLE_OWNER_EMAIL_', config.google.connectionOwnerEmails],
     ['GOOGLE_SERVICE_ACCOUNT_JSON_', config.google.connectionServiceAccounts],
   ] as const) {
-    const unknown = Object.keys(overrides).filter((id) => !CONNECTORS.some((c) => c.id === id));
+    const unknown = Object.keys(overrides).filter(
+      (id) => !googleConnectors.some((c) => c.id === id),
+    );
     if (unknown.length > 0) {
       throw new ConfigError(
-        `Unknown MCP in ${unknown.map((id) => prefix + connectionEnvSuffix(id)).join(', ')}; use one of: ${CONNECTORS.map((c) => prefix + connectionEnvSuffix(c.id)).join(', ')}`,
+        `Unknown MCP in ${unknown.map((id) => prefix + connectionEnvSuffix(id)).join(', ')}; use one of: ${googleConnectors.map((c) => prefix + connectionEnvSuffix(c.id)).join(', ')}`,
       );
     }
   }
-  if (config.google.authMode === 'oauth') {
+  // With only API-key MCPs enabled, no Google account settings are needed.
+  if (connections.length > 0 && config.google.authMode === 'oauth') {
     if (!config.google.clientId || !config.google.clientSecret) {
       throw new ConfigError(
         'GOOGLE_AUTH_MODE=oauth requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET',
@@ -305,7 +316,7 @@ function validateConfig(config: Config): void {
         'ENCRYPTION_KEY is required in oauth mode (it encrypts the stored Google refresh token)',
       );
     }
-  } else {
+  } else if (connections.length > 0) {
     const missing = connections.filter((id) => !serviceAccountFor(config, id));
     if (missing.length > 0) {
       throw new ConfigError(

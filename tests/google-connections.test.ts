@@ -66,6 +66,7 @@ describe('per-MCP Google connections', () => {
       'gtm',
       'youtube',
       'merchant',
+      'places',
     ]);
     const { google: some } = setup({ ENABLED_SERVICES: 'gsc,ga4,youtube' });
     expect(some.all().map((c) => c.id)).toEqual(['search-analytics', 'youtube']);
@@ -235,7 +236,7 @@ describe('per-MCP Google connections', () => {
       const { google, kv } = setup({ GOOGLE_OWNER_EMAIL_GTM: '' });
       const legacy = seedLegacy(kv);
       expect(google.migrateShared()).toEqual(['search-analytics', 'gtm', 'youtube', 'merchant']);
-      for (const c of google.all()) {
+      for (const c of google.all().filter((c) => c.mode !== 'api_key')) {
         expect(c.status()).toMatchObject({
           connected: true,
           identity: 'owner@example.com',
@@ -275,6 +276,14 @@ describe('per-MCP Google connections', () => {
       google.migrateShared();
       expect(google.get('search-analytics').status().missingScopes).toEqual([]);
       expect(google.get('gtm').status().missingScopes).toEqual([GOOGLE_SCOPES.gtmRead]);
+    });
+
+    it('never copies the shared connection into the API-key MCP', () => {
+      const { google, kv } = setup({ GOOGLE_PLACES_API_KEY: 'k'.repeat(30) });
+      seedLegacy(kv);
+      expect(google.migrateShared()).not.toContain('places');
+      expect(kv.get('google.oauth.places')).toBeUndefined();
+      expect(google.get('places').status()).toMatchObject({ mode: 'api_key', connected: true });
     });
 
     it('does nothing in service-account mode', () => {

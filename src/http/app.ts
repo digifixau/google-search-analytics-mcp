@@ -282,7 +282,10 @@ export function createHttpApp(app: AppContext): express.Express {
   /** The MCP a setup form refers to; only enabled connectors are accepted. */
   const formConnection = (req: Request) => {
     const id = String(req.body?.connection ?? '');
-    return app.google.has(id) ? app.google.get(id) : undefined;
+    // API-key MCPs (Places) have no Google account to connect or disconnect.
+    return app.google.has(id) && app.google.get(id).mode !== 'api_key'
+      ? app.google.get(id)
+      : undefined;
   };
 
   server.post('/setup/google/connect', form, requireSession, async (req, res) => {
@@ -359,14 +362,19 @@ export async function startHttp(app: AppContext): Promise<void> {
   );
   for (const c of enabledConnectors(app.config)) {
     const status = app.google.get(c.id).status();
-    const google = !status.connected
-      ? 'Google NOT connected'
-      : `Google: ${status.identity ?? 'connected'}${status.migratedFromShared ? ' (shared, from before upgrade)' : ''}${status.missingScopes.length ? ' — missing scopes, reconnect' : ''}`;
+    const google =
+      status.mode === 'api_key'
+        ? status.connected
+          ? 'API key configured'
+          : 'API key MISSING'
+        : !status.connected
+          ? 'Google NOT connected'
+          : `Google: ${status.identity ?? 'connected'}${status.migratedFromShared ? ' (shared, from before upgrade)' : ''}${status.missingScopes.length ? ' — missing scopes, reconnect' : ''}`;
     console.error(
       `[gsa-mcp]   ${c.title} MCP: ${connectorUrl(c, app.config.publicUrl!).href} — ${google}`,
     );
   }
-  if (app.google.all().some((c) => !c.status().connected)) {
+  if (app.google.all().some((c) => c.mode !== 'api_key' && !c.status().connected)) {
     console.error(
       `[gsa-mcp] Connect Google accounts at ${new URL('/setup', app.config.publicUrl).href}`,
     );

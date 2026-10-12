@@ -1,6 +1,10 @@
 import type { Config } from './config.js';
 import { GoogleConnections } from './google/auth.js';
-import { createGoogleApisProvider, type GoogleApisProvider } from './google/clients.js';
+import {
+  createGoogleApisProvider,
+  createPlacesApisProvider,
+  type GoogleApisProvider,
+} from './google/clients.js';
 import { Encryptor } from './store/crypto.js';
 import { AuditLog, KvStore, openDb, type Db } from './store/db.js';
 import { AccessPolicy } from './util/policy.js';
@@ -35,7 +39,10 @@ export function createAppContext(config: Config): AppContext {
       let provider = providers.get(connectionId);
       if (!provider) {
         const connection = google.get(connectionId);
-        provider = createGoogleApisProvider(() => connection.getClient());
+        provider =
+          connection.mode === 'api_key'
+            ? createPlacesApisProvider(() => config.google.placesApiKey)
+            : createGoogleApisProvider(() => connection.getClient());
         providers.set(connectionId, provider);
       }
       return provider;

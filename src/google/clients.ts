@@ -4,6 +4,7 @@ import {
   type analyticsadmin_v1beta,
   type analyticsdata_v1beta,
   type indexing_v3,
+  type places_v1,
   type searchconsole_v1,
   type tagmanager_v2,
   type youtubeAnalytics_v2,
@@ -16,6 +17,8 @@ import {
   type merchantapi_reports_v1,
 } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
+import { registerSecret } from '../util/errors.js';
+import { GoogleNotConnectedError } from './auth.js';
 
 export interface GoogleApis {
   searchconsole: searchconsole_v1.Searchconsole;
@@ -32,6 +35,8 @@ export interface GoogleApis {
   merchantProducts: merchantapi_products_v1.Merchantapi;
   merchantPromotions: merchantapi_promotions_v1.Merchantapi;
   merchantReports: merchantapi_reports_v1.Merchantapi;
+  /** Only present on the Places MCP, which is authenticated by API key instead of a Google account. */
+  places?: places_v1.Places;
 }
 
 /** Lazily resolves Google API clients so tools fail with a clear message if Google is not connected. */
@@ -62,5 +67,35 @@ export function createGoogleApisProvider(getAuth: () => Promise<AuthClient>): Go
     };
     cached = { auth, apis };
     return apis;
+  };
+}
+
+/**
+ * Places is called with an API key, sent in the `X-Goog-Api-Key` header so it never appears in a URL
+ * or log line. Only the Places client exists on this provider: the Places MCP never touches the
+ * other Google clients, and has no Google account or token to leak.
+ */
+export function createPlacesApisProvider(
+  getKey: () => string | undefined,
+  options: { rootUrl?: string } = {},
+): GoogleApisProvider {
+  let cached: { key: string; apis: GoogleApis } | undefined;
+  return async () => {
+    const key = getKey();
+    if (!key) {
+      throw new GoogleNotConnectedError(
+        'The Google Places MCP has no API key. The server owner must set GOOGLE_PLACES_API_KEY and redeploy.',
+      );
+    }
+    if (cached?.key !== key) {
+      registerSecret(key);
+      const places = google.places({
+        version: 'v1',
+        headers: { 'X-Goog-Api-Key': key },
+        ...(options.rootUrl ? { rootUrl: options.rootUrl } : {}),
+      });
+      cached = { key, apis: { places } as GoogleApis };
+    }
+    return cached.apis;
   };
 }

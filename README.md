@@ -1,6 +1,6 @@
-# Google Marketing MCP server (Search Console, GA4, Tag Manager, YouTube, Merchant Center)
+# Google Marketing MCP server (Search Console, GA4, Tag Manager, YouTube, Merchant Center, Places)
 
-A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4**, **Google Tag Manager**, **YouTube Analytics** and **Google Merchant Center**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
+A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4**, **Google Tag Manager**, **YouTube Analytics**, **Google Merchant Center** and **Google Places**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
 
 - **One app, several MCPs.** Each product family is its own MCP endpoint, so every connector keeps a short, focused tool list:
 
@@ -10,8 +10,9 @@ A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotoc
   | Google Tag Manager                | `/mcp/gtm`      | 22: container audit, tags/triggers/variables, workspaces, versions, publishing                                                                        |
   | YouTube Analytics                 | `/mcp/youtube`  | 10: channel & video analytics, top videos, traffic sources, audience, retention, revenue, video metadata edits                                        |
   | Google Merchant Center            | `/mcp/merchant` | 14: account health, product issues & disapprovals, products, Shopping performance, price competitiveness, promotions, product edits                   |
+  | Google Places                     | `/mcp/places`   | 5, read-only: text search, nearby search, place details, reviews, photos                                                                              |
 
-  All MCPs share one deployment, one approval page and one audit log, and each has its own Google connection, so every MCP can use a different Google account. More can be added later; see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
+  All MCPs share one deployment, one approval page and one audit log, and each Google-account MCP has its own Google connection, so every one can use a different Google account. Places is the exception: it uses a server-side API key instead of a Google account. More can be added later; see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
 
 - **Remote or local**: a Streamable HTTP endpoint with its own OAuth 2.1 server (works as a custom connector in claude.ai and ChatGPT), or stdio for Claude Desktop and Claude Code.
 - **Your credentials stay on your server**: sign in to Google once (OAuth) or use a service account. Refresh tokens are encrypted at rest with AES-256-GCM.
@@ -66,6 +67,8 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 
 **Merchant Center (write, `merchant`):** `merchant_upsert_product`, `merchant_update_product` (only the attributes you pass), `merchant_delete_product`, and `merchant_register_gcp_project` (one-time setup, see below)
 
+**Places (read-only, API key):** `places_search_text` (free-text query with optional type, rating, price, open-now and location filters), `places_search_nearby` (types within a radius, ranked by popularity or distance), `places_get_place` (address, rating, website, phone, hours, summary, service options, photo references), `places_get_reviews` (rating, review count and the up-to-5 reviews Google returns), `places_get_photo` (an image URL for a photo reference). There are no write tools, so `ACCESS_MODE` makes no difference here. Each search and detail tool takes a `detail` level (`basic`, `standard`, `full`) because Google bills Places by the fields requested; every call is billed, so see the [cost notes](#places-api-key-and-cost) below.
+
 > **Google permission notes.** YouTube edits need Google's broad `youtube` scope (it would also allow deleting videos; this server has no such tool). It is only requested in read-write mode with the `youtube` toolset on; otherwise `youtube.readonly` is used. The Merchant API has a **single read+write scope** (`content`), so Google shows write access even when this server is read-only; the server still hides write tools unless read-write is enabled and the connection was approved with **Make changes**.
 
 > The Indexing API is officially supported only for pages with `JobPosting` or `BroadcastEvent` structured data. The default quota is 200 publishes per day.
@@ -75,7 +78,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ## 1. Google Cloud setup (one time)
 
 1. Create or choose a project at <https://console.cloud.google.com>.
-2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_, _Tag Manager API_, _YouTube Analytics API_, _YouTube Data API v3_, _Merchant API_ and, if you will use it, _Web Search Indexing API_. (Skip the ones for products you turn off with `ENABLED_SERVICES`.)
+2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_, _Tag Manager API_, _YouTube Analytics API_, _YouTube Data API v3_, _Merchant API_, _Places API (New)_ and, if you will use it, _Web Search Indexing API_. (Skip the ones for products you turn off with `ENABLED_SERVICES`.)
 3. Pick an auth mode:
 
 ### Option A: OAuth as yourself (recommended)
@@ -91,7 +94,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ### Option B: Service account
 
 1. Create a service account and a JSON key.
-2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), **each** GTM container (Read, Edit, or Publish for publishing), and **each** Merchant Center account (Standard access, or Admin for registration). YouTube does **not** support service accounts, so use OAuth mode for YouTube, or turn it off with `ENABLED_SERVICES`.
+2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), **each** GTM container (Read, Edit, or Publish for publishing), and **each** Merchant Center account (Standard access, or Admin for registration). YouTube does **not** support service accounts, so use OAuth mode for YouTube, or turn it off with `ENABLED_SERVICES`. Places needs no service account at all: it uses an API key (see below).
 3. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON, a file path, or base64). To use a different service account for one MCP, set `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>` (e.g. `GOOGLE_SERVICE_ACCOUNT_JSON_MERCHANT`).
 
 ---
@@ -117,6 +120,16 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 6. Open **`https://mcp.example.com/setup`**, sign in with `ADMIN_PASSWORD`, and click **Connect** on each MCP card (Search Console & Analytics, Tag Manager, YouTube, Merchant Center).
 
 If you change `ACCESS_MODE` or `WRITE_TOOLSETS` later, click **Reconnect** on the affected cards so Google grants the new scopes. Each card warns you when its scopes are missing.
+
+### Places API key and cost
+
+The Places MCP has no Google sign-in. It calls Google Places with an **API key** that lives only in the server's environment (`GOOGLE_PLACES_API_KEY`). It is sent to Google in a request header, never in a URL, is never shown on `/setup` (which only says "API key configured" or "missing"), and is never sent to Claude or ChatGPT.
+
+1. Enable **Places API (New)** and **billing** on your Google Cloud project.
+2. In **APIs & Services → Credentials → Create credentials → API key**, restrict it: **API restriction → Places API (New)**, and, if your host has a fixed IP, an **IP address** application restriction.
+3. Set `GOOGLE_PLACES_API_KEY` and redeploy. Without a key the rest of the server works as before, the Places card says "API key missing", and Places tools tell the AI to ask you to set it.
+
+Google bills every Places call, and richer `detail` levels cost more (basic is cheapest; standard adds ratings, contact details and hours; full adds amenities, photos and the summary; reviews are billed at the highest rate). The tools cap results at 20 per call and radius at 50 km. To limit spend, set a **daily quota cap** for the Places API in Google Cloud (**APIs & Services → Places API (New) → Quotas**) and a budget alert.
 
 ### One Google account per MCP
 
@@ -160,6 +173,7 @@ claude mcp add --transport http google-search-analytics https://mcp.example.com/
 claude mcp add --transport http google-tag-manager https://mcp.example.com/mcp/gtm
 claude mcp add --transport http youtube-analytics https://mcp.example.com/mcp/youtube
 claude mcp add --transport http google-merchant-center https://mcp.example.com/mcp/merchant
+claude mcp add --transport http google-places https://mcp.example.com/mcp/places
 
 # or a static API key from MCP_API_KEYS (e.g. MCP_API_KEYS=claude-code=<token>:read+write); API keys work on every MCP
 claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp \
@@ -206,32 +220,33 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 
 ## Configuration reference
 
-| Variable                                                        | Default                       | Description                                                                                                                      |
-| --------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `TRANSPORT`                                                     | `stdio` (`http` in Docker)    | `http` or `stdio`                                                                                                                |
-| `PUBLIC_URL`                                                    | –                             | Required for `http`. Must be https, except for localhost.                                                                        |
-| `PORT` / `HOST`                                                 | `3000` / `0.0.0.0`            | Listen address                                                                                                                   |
-| `DATA_DIR`                                                      | `./data` (`/data` in Docker)  | SQLite database location                                                                                                         |
-| `ACCESS_MODE`                                                   | `readonly`                    | `readonly` or `readwrite`                                                                                                        |
-| `WRITE_TOOLSETS`                                                | all                           | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`, `youtube`, `merchant`               |
-| `ENABLED_SERVICES`                                              | all                           | Which products to expose: `gsc`, `ga4`, `gtm`, `youtube`, `merchant`. Disabled products get no MCP endpoint and no Google scopes |
-| `ADMIN_PASSWORD`                                                | –                             | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                                              |
-| `ENCRYPTION_KEY`                                                | –                             | Required in oauth mode, at least 32 chars                                                                                        |
-| `MCP_API_KEYS`                                                  | –                             | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                                                   |
-| `ACCESS_TOKEN_TTL_SECONDS`                                      | `3600`                        | OAuth access token lifetime                                                                                                      |
-| `REFRESH_TOKEN_TTL_DAYS`                                        | `30`                          | Rotating refresh token lifetime                                                                                                  |
-| `GOOGLE_AUTH_MODE`                                              | `oauth`                       | `oauth` or `service_account`                                                                                                     |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                     | –                             | OAuth client (oauth mode)                                                                                                        |
-| `GOOGLE_OWNER_EMAIL`                                            | –                             | Required for `http` + oauth. Comma list of the (verified) Google accounts that may be connected to any MCP                       |
-| `GOOGLE_OWNER_EMAIL_<MCP>`                                      | `GOOGLE_OWNER_EMAIL`          | Per-MCP list (`SEARCH_ANALYTICS`, `GTM`, `YOUTUBE`, `MERCHANT`). Replaces the shared list for that MCP                           |
-| `GOOGLE_SERVICE_ACCOUNT_JSON`                                   | –                             | Key JSON, path, or base64 (service account mode)                                                                                 |
-| `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>`                             | `GOOGLE_SERVICE_ACCOUNT_JSON` | A different service account for one MCP                                                                                          |
-| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`                  | all                           | Read allowlists                                                                                                                  |
-| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES`      | read lists                    | Write allowlists                                                                                                                 |
-| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`       | all / read list               | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                                               |
-| `ALLOWED_YOUTUBE_CHANNELS` / `WRITE_ALLOWED_YOUTUBE_CHANNELS`   | all / read list               | YouTube channel IDs (`UC…`)                                                                                                      |
-| `ALLOWED_MERCHANT_ACCOUNTS` / `WRITE_ALLOWED_MERCHANT_ACCOUNTS` | all / read list               | Merchant Center account IDs                                                                                                      |
-| `TRUST_PROXY`                                                   | `true`                        | Trust one reverse-proxy hop for client IPs (rate limiting)                                                                       |
+| Variable                                                        | Default                       | Description                                                                                                                                |
+| --------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TRANSPORT`                                                     | `stdio` (`http` in Docker)    | `http` or `stdio`                                                                                                                          |
+| `PUBLIC_URL`                                                    | –                             | Required for `http`. Must be https, except for localhost.                                                                                  |
+| `PORT` / `HOST`                                                 | `3000` / `0.0.0.0`            | Listen address                                                                                                                             |
+| `DATA_DIR`                                                      | `./data` (`/data` in Docker)  | SQLite database location                                                                                                                   |
+| `ACCESS_MODE`                                                   | `readonly`                    | `readonly` or `readwrite`                                                                                                                  |
+| `WRITE_TOOLSETS`                                                | all                           | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`, `youtube`, `merchant`                         |
+| `ENABLED_SERVICES`                                              | all                           | Which products to expose: `gsc`, `ga4`, `gtm`, `youtube`, `merchant`, `places`. Disabled products get no MCP endpoint and no Google scopes |
+| `ADMIN_PASSWORD`                                                | –                             | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                                                        |
+| `ENCRYPTION_KEY`                                                | –                             | Required in oauth mode, at least 32 chars                                                                                                  |
+| `MCP_API_KEYS`                                                  | –                             | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                                                             |
+| `ACCESS_TOKEN_TTL_SECONDS`                                      | `3600`                        | OAuth access token lifetime                                                                                                                |
+| `REFRESH_TOKEN_TTL_DAYS`                                        | `30`                          | Rotating refresh token lifetime                                                                                                            |
+| `GOOGLE_AUTH_MODE`                                              | `oauth`                       | `oauth` or `service_account`                                                                                                               |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                     | –                             | OAuth client (oauth mode)                                                                                                                  |
+| `GOOGLE_OWNER_EMAIL`                                            | –                             | Required for `http` + oauth. Comma list of the (verified) Google accounts that may be connected to any MCP                                 |
+| `GOOGLE_OWNER_EMAIL_<MCP>`                                      | `GOOGLE_OWNER_EMAIL`          | Per-MCP list (`SEARCH_ANALYTICS`, `GTM`, `YOUTUBE`, `MERCHANT`). Replaces the shared list for that MCP                                     |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`                                   | –                             | Key JSON, path, or base64 (service account mode)                                                                                           |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_<MCP>`                             | `GOOGLE_SERVICE_ACCOUNT_JSON` | A different service account for one MCP                                                                                                    |
+| `GOOGLE_PLACES_API_KEY`                                         | –                             | API key for the Places MCP (Places API (New)). Server-side only; the MCP reports "API key missing" until set                               |
+| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`                  | all                           | Read allowlists                                                                                                                            |
+| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES`      | read lists                    | Write allowlists                                                                                                                           |
+| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`       | all / read list               | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                                                         |
+| `ALLOWED_YOUTUBE_CHANNELS` / `WRITE_ALLOWED_YOUTUBE_CHANNELS`   | all / read list               | YouTube channel IDs (`UC…`)                                                                                                                |
+| `ALLOWED_MERCHANT_ACCOUNTS` / `WRITE_ALLOWED_MERCHANT_ACCOUNTS` | all / read list               | Merchant Center account IDs                                                                                                                |
+| `TRUST_PROXY`                                                   | `true`                        | Trust one reverse-proxy hop for client IPs (rate limiting)                                                                                 |
 
 ## Security notes
 
@@ -265,7 +280,9 @@ Every MCP endpoint is a **connector** in `src/mcp/connectors.ts`. Adding one is 
 2. **Google scopes.** In `requiredGoogleScopes()` in `src/google/auth.ts`, add the scopes for read-only and for each write toolset. The new MCP automatically gets its own Google connection and `/setup` card, and `GOOGLE_OWNER_EMAIL_<ID>` works for it.
 3. **API client.** Add the client to `GoogleApis` in `src/google/clients.ts`, e.g. `google.youtubeAnalytics({ version: 'v2' })`.
 4. **Tools.** Write `src/tools/youtube.ts` with `defineTool({ toolset: 'youtube', access: 'read' | 'write', ... })` and register it in `src/tools/index.ts`. Read-only gating, `[WRITE]` labels, confirmations and the audit log apply automatically.
-5. **Connector.** Add an entry to `CONNECTORS`: `{ id: 'youtube', path: '/mcp/youtube', serverName, title, services: ['youtube'], includeCompat: false, instructions }`.
+5. **Connector.** Add an entry to `CONNECTORS`: `{ id: 'youtube', path: '/mcp/youtube', serverName, title, services: ['youtube'], authKind: 'google', includeCompat: false, instructions }`.
+
+An API that uses a key instead of a Google account (like Places) sets `authKind: 'api_key'`. It then gets no Google connection, no consent flow and no `GOOGLE_OWNER_EMAIL_<ID>`; its key goes in config (`GOOGLE_PLACES_API_KEY`) and a provider in `src/google/clients.ts` (`createPlacesApisProvider`).
 
 The HTTP routes, OAuth resource metadata, token binding, consent page, `/setup` listing, `ENABLED_SERVICES` switch and stdio `--connector youtube` all follow from the connector entry.
 

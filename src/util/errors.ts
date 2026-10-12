@@ -1,5 +1,16 @@
 import { GoogleNotConnectedError } from '../google/auth.js';
 
+/** Secret values (API keys) that must never appear in an error message. */
+const secrets = new Set<string>();
+export function registerSecret(value: string): void {
+  if (value) secrets.add(value);
+}
+function redact(message: string): string {
+  let out = message;
+  for (const secret of secrets) out = out.split(secret).join('[redacted]');
+  return out;
+}
+
 export class ToolInputError extends Error {}
 export class AccessDeniedError extends Error {}
 
@@ -18,6 +29,10 @@ interface GaxiosLikeError {
 
 /** Turns Google API and internal errors into short, actionable messages for the model and the user. */
 export function describeError(error: unknown): string {
+  return redact(describe(error));
+}
+
+function describe(error: unknown): string {
   if (error instanceof ToolInputError) return `Invalid input: ${error.message}`;
   if (error instanceof AccessDeniedError) return `Access denied by server policy: ${error.message}`;
   if (error instanceof GoogleNotConnectedError) return error.message;
@@ -39,6 +54,25 @@ export function describeError(error: unknown): string {
     )
   ) {
     return 'This Google Cloud project is not registered with the Merchant Center account yet. Run merchant_register_gcp_project once for this account (read-write connection), then retry.';
+  }
+  const details =
+    typeof data?.error === 'object' && data.error?.details
+      ? JSON.stringify(data.error.details)
+      : '';
+  if (
+    /API[_ ]KEY[_ ](INVALID|EXPIRED)|API key (not valid|expired)/i.test(googleMessage + details)
+  ) {
+    return `Google rejected the Places API key: ${googleMessage.replace(/\.+$/, '')}. Check GOOGLE_PLACES_API_KEY on the server.`;
+  }
+  if (
+    /API_KEY_(HTTP_REFERRER|IP_ADDRESS|SERVICE|ANDROID_APP|IOS_APP)_BLOCKED|requests from (referer|ip address).*blocked|requests to this API .* are blocked/i.test(
+      googleMessage + details,
+    )
+  ) {
+    return `The Places API key's restrictions block this server: ${googleMessage.replace(/\.+$/, '')}. In Google Cloud, set the key's application restriction to None or this server's IP, and its API restriction to "Places API (New)".`;
+  }
+  if (/billing/i.test(googleMessage) && (status === 403 || status === 400)) {
+    return `Google Places needs billing enabled on the Google Cloud project: ${googleMessage}`;
   }
   if (googleMessage.includes('invalid_grant')) {
     return "Google rejected this MCP's stored refresh token (revoked or expired). Click Reconnect on this MCP's card on /setup (or run `google-auth --connector <id>`); other MCPs are not affected.";

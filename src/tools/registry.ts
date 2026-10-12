@@ -4,7 +4,7 @@ import { MCP_SCOPES, type Config, type Service, type WriteToolset } from '../con
 import type { GoogleApisProvider } from '../google/clients.js';
 import type { AccessPolicy } from '../util/policy.js';
 
-export type Toolset = 'gsc' | 'ga4' | 'compat' | WriteToolset;
+export type Toolset = 'gsc' | 'ga4' | 'places' | 'compat' | WriteToolset;
 
 /** Which Google product a toolset belongs to (used by ENABLED_SERVICES). `compat` spans all of them. */
 export function serviceOf(toolset: Toolset): Service | undefined {
@@ -14,6 +14,7 @@ export function serviceOf(toolset: Toolset): Service | undefined {
   if (toolset === 'gtm' || toolset === 'gtm_publish') return 'gtm';
   if (toolset === 'youtube') return 'youtube';
   if (toolset === 'merchant') return 'merchant';
+  if (toolset === 'places') return 'places';
   return undefined;
 }
 

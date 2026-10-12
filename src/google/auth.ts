@@ -100,7 +100,7 @@ interface StoredOAuthCredentials {
 export interface GoogleAuthStatus {
   connectionId: string;
   title: string;
-  mode: 'oauth' | 'service_account';
+  mode: 'oauth' | 'service_account' | 'api_key';
   connected: boolean;
   identity?: string;
   grantedScopes: string[];
@@ -134,8 +134,8 @@ export class GoogleConnection {
     return this.connector.title;
   }
 
-  get mode(): 'oauth' | 'service_account' {
-    return this.config.google.authMode;
+  get mode(): 'oauth' | 'service_account' | 'api_key' {
+    return this.connector.authKind === 'api_key' ? 'api_key' : this.config.google.authMode;
   }
 
   get scopes(): string[] {
@@ -152,6 +152,17 @@ export class GoogleConnection {
       title: this.title,
       allowedEmails: this.allowedEmails,
     };
+    if (this.mode === 'api_key') {
+      // The key itself is never part of the status: only whether it is set.
+      return {
+        ...base,
+        mode: 'api_key',
+        connected: Boolean(this.config.google.placesApiKey),
+        identity: 'API key',
+        grantedScopes: [],
+        missingScopes: [],
+      };
+    }
     if (this.mode === 'service_account') {
       const key = loadServiceAccountKey(serviceAccountFor(this.config, this.id)!);
       return {
@@ -178,6 +189,7 @@ export class GoogleConnection {
 
   /** Returns this connection's authenticated client or throws an actionable error. */
   async getClient(): Promise<AuthClient> {
+    this.assertGoogleAccount();
     if (this.client) return this.client;
 
     if (this.mode === 'service_account') {
@@ -209,6 +221,7 @@ export class GoogleConnection {
 
   /** Google consent URL for this connection (oauth mode only). */
   buildConsentUrl(redirectUri: string, state: string, codeChallenge: string): string {
+    this.assertGoogleAccount();
     return this.newOAuthClient(redirectUri).generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
@@ -229,6 +242,7 @@ export class GoogleConnection {
     redirectUri: string,
     codeVerifier: string,
   ): Promise<GoogleAuthStatus> {
+    this.assertGoogleAccount();
     const oauth = this.newOAuthClient(redirectUri);
     const { tokens } = await oauth.getToken({ code, codeVerifier, redirect_uri: redirectUri });
     if (!tokens.refresh_token) {
@@ -269,6 +283,7 @@ export class GoogleConnection {
    * ends the whole grant, which would also break other MCPs connected with the same Google account.
    */
   disconnect(): void {
+    if (this.mode === 'api_key') return;
     this.kv.delete(kvKey(this.id));
     this.kv.set(disconnectedKey(this.id), new Date().toISOString());
     this.client = undefined;
@@ -279,6 +294,7 @@ export class GoogleConnection {
    * or is restricted (GOOGLE_OWNER_EMAIL_<MCP>) to accounts that don't include the shared one.
    */
   adoptShared(legacyCiphertext: string): 'adopted' | 'skipped' | 'not-allowed' {
+    if (this.mode === 'api_key') return 'skipped';
     if (this.kv.get(kvKey(this.id)) || this.kv.get(disconnectedKey(this.id))) return 'skipped';
     const legacy = this.decrypt(legacyCiphertext);
     const allowed = this.allowedEmails;
@@ -287,6 +303,13 @@ export class GoogleConnection {
     }
     this.writeStored({ ...legacy, migratedFromShared: true });
     return 'adopted';
+  }
+
+  /** API-key MCPs (Places) have no Google account, so there is nothing to sign in to. */
+  private assertGoogleAccount(): void {
+    if (this.mode === 'api_key') {
+      throw new Error(`The ${this.title} MCP uses an API key, not a Google account.`);
+    }
   }
 
   private newOAuthClient(redirectUri?: string): OAuth2Client {

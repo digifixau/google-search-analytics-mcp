@@ -160,6 +160,7 @@ describe('HTTP endpoints', () => {
       gtm: `${base}/mcp/gtm`,
       youtube: `${base}/mcp/youtube`,
       merchant: `${base}/mcp/merchant`,
+      places: `${base}/mcp/places`,
     });
   });
 
@@ -359,5 +360,83 @@ describe('/setup Google connections', () => {
       connected: true,
       identity: 'owner@example.com',
     });
+  });
+});
+
+describe('Places MCP over HTTP', () => {
+  const KEY = 'places-secret-key-abcdef';
+
+  it('serves five read-only tools and is removed when the service is disabled', async () => {
+    const base = await start();
+    const places = await listTools(base, '/mcp/places', API_KEY);
+    expect(places.serverName).toBe('google-places-mcp');
+    expect(places.names).toHaveLength(5);
+    expect(places.names.every((n) => n.startsWith('places_'))).toBe(true);
+    expect(
+      (await listTools(base, '/mcp', API_KEY)).names.some((n) => n.startsWith('places_')),
+    ).toBe(false);
+    const off = await start({ ENABLED_SERVICES: 'gsc,ga4' });
+    expect((await fetch(`${off}/mcp/places`, { method: 'POST', body: '{}' })).status).toBe(404);
+  });
+
+  it('only accepts a token approved for the Places endpoint', async () => {
+    const base = await start();
+    const token = await oauthToken(base, `${base}/mcp/places`);
+    expect((await listTools(base, '/mcp/places', token)).names).toHaveLength(5);
+    const wrong = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(wrong.status).toBe(401);
+  });
+
+  it('shows an API key card without connect buttons and never reveals the key', async () => {
+    const missing = await start();
+    const { cookie } = await setupSession(missing);
+    let page = await (await fetch(`${missing}/setup`, { headers: { cookie } })).text();
+    expect(page).toContain('API key missing');
+    expect(page).toContain('GOOGLE_PLACES_API_KEY');
+    expect(page).not.toContain('value="places"');
+
+    const base = await start({ GOOGLE_PLACES_API_KEY: KEY });
+    const session = await setupSession(base);
+    page = await (await fetch(`${base}/setup`, { headers: { cookie: session.cookie } })).text();
+    expect(page).toContain('API key configured');
+    expect(page).toContain(`${base}/mcp/places`);
+    expect(page).not.toContain(KEY);
+    // There is no Google account to connect or disconnect for an API-key MCP.
+    for (const action of ['connect', 'disconnect']) {
+      const res = await setupPost(base, `/setup/google/${action}`, session.cookie, {
+        csrf: session.csrf,
+        connection: 'places',
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('answers tool calls with an actionable error until a key is configured', async () => {
+    const base = await start();
+    const call = (name: string, args: object) =>
+      fetch(`${base}/mcp/places`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${API_KEY}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        }),
+      }).then(
+        (r) =>
+          r.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>,
+      );
+    const res = await call('places_search_text', { query: 'cafe' });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0]!.text).toContain('GOOGLE_PLACES_API_KEY');
   });
 });

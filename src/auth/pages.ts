@@ -144,6 +144,11 @@ export function dashboardPage(v: DashboardView): string {
     let body: string;
     if (g.mode === 'service_account') {
       body = `<p class="ok">Service account <code>${escapeHtml(g.identity)}</code></p>`;
+    } else if (g.mode === 'api_key') {
+      // Only whether the key is set is shown, never the key itself.
+      body = g.connected
+        ? '<p class="ok">API key configured</p><p class="muted">This MCP needs no Google sign-in.</p>'
+        : '<p class="err">API key missing</p><p class="muted">Set <code>GOOGLE_PLACES_API_KEY</code> on the server and redeploy.</p>';
     } else if (!g.connected) {
       body = `<p class="err">Not connected</p>
         ${g.allowedEmails.length ? `<p class="muted">Allowed: ${g.allowedEmails.map(escapeHtml).join(', ')}</p>` : ''}
