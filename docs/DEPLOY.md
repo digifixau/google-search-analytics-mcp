@@ -57,6 +57,7 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
 - Google Search Console API
 - Google Analytics Data API
 - Google Analytics Admin API
+- Tag Manager API
 - Web Search Indexing API (only if you'll use `indexing_publish`)
 
 ### 2.2a OAuth mode (recommended)
@@ -77,6 +78,7 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
 2. Copy the service account email (`name@project.iam.gserviceaccount.com`) and grant it access:
    - **Search Console** → each property → Settings → Users and permissions → Add user. Use **Full** for reading. Use **Owner** if you want sitemap, site or Indexing API changes.
    - **GA4** → Admin → Property access management → **+** → add the email. Use **Viewer** for reading, **Editor** for writes.
+   - **Tag Manager** → Admin → Container → User Management → **+** → add the email. Use **Read** for auditing, **Edit** for changes, **Publish** to let it publish.
 3. Encode the key for the env var: `base64 -w0 key.json` (macOS: `base64 -i key.json`).
 
 ---
@@ -206,6 +208,10 @@ Then continue from [step 4](#4-connect-google-oauth-mode).
 ## Day-2 operations
 
 **Updating.** Push to `main` and Coolify redeploys. If you used the GitHub App, auto-deploy is on by default; otherwise click **Redeploy**. Data in `/data` survives.
+
+**After an upgrade that adds a Google product (e.g. Tag Manager).** `/setup` lists the missing Google scopes. Enable the new API in Google Cloud (step 2.1), then click **Reconnect Google**. Until you do, the existing tools keep working and the new ones return a "reconnect Google" message. Don't want the new product? Set `ENABLED_SERVICES` to the ones you use (e.g. `gsc,ga4`).
+
+**Tag Manager publishing.** In read-write mode the AI can publish GTM versions to your live site (it must type the `GTM-XXXX` ID back to confirm, and every publish is in the audit log). To allow editing but keep publishing for yourself, set `WRITE_TOOLSETS` without `gtm_publish`.
 
 **Switching to read-write.** Set `ACCESS_MODE=readwrite`, optionally narrow `WRITE_TOOLSETS`, and redeploy. Then:
 

@@ -1,10 +1,19 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { z } from 'zod';
-import { MCP_SCOPES, type Config, type WriteToolset } from '../config.js';
+import { MCP_SCOPES, type Config, type Service, type WriteToolset } from '../config.js';
 import type { GoogleApisProvider } from '../google/clients.js';
 import type { AccessPolicy } from '../util/policy.js';
 
 export type Toolset = 'gsc' | 'ga4' | 'compat' | WriteToolset;
+
+/** Which Google product a toolset belongs to (used by ENABLED_SERVICES). `compat` spans all of them. */
+export function serviceOf(toolset: Toolset): Service | undefined {
+  if (toolset === 'gsc' || toolset === 'indexing') return 'gsc';
+  if (toolset === 'ga4' || toolset === 'ga4_admin' || toolset === 'ga4_audiences_streams')
+    return 'ga4';
+  if (toolset === 'gtm' || toolset === 'gtm_publish') return 'gtm';
+  return undefined;
+}
 
 export interface ToolContext {
   apis: GoogleApisProvider;
@@ -40,6 +49,8 @@ export function defineTool<Shape extends z.ZodRawShape>(def: ToolDef<Shape>): To
  */
 export function isToolEnabled(def: ToolDef, config: Config, scopes: readonly string[]): boolean {
   if (!scopes.includes(MCP_SCOPES.read)) return false;
+  const service = serviceOf(def.toolset);
+  if (service && !config.enabledServices.includes(service)) return false;
   const writeEnabled = config.accessMode === 'readwrite';
   const toolsetEnabled = (config.writeToolsets as string[]).includes(def.toolset);
   if (def.access === 'write') {

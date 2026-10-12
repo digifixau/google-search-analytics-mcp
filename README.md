@@ -1,8 +1,8 @@
-# Google Search Console + GA4 MCP server
+# Google Search Console, GA4 & Tag Manager MCP server
 
-A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console** and **Google Analytics 4** data. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
+A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4** and **Google Tag Manager**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
 
-- **46 tools**: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports (standard, realtime, pivot), GA4 admin, audiences, data streams, and the Indexing API.
+- **68 tools**: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports (standard, realtime, pivot), GA4 admin, audiences, data streams, the Indexing API, and GTM auditing, editing and publishing. Turn whole products off with `ENABLED_SERVICES`.
 - **Remote or local**: a Streamable HTTP endpoint with its own OAuth 2.1 server (works as a custom connector in claude.ai and ChatGPT), or stdio for Claude Desktop and Claude Code.
 - **Your credentials stay on your server**: sign in to Google once (OAuth) or use a service account. Refresh tokens are encrypted at rest with AES-256-GCM.
 - **Layered access control**: a server-wide mode, a per-connection grant, optional allowlists, and an audit log of every write.
@@ -15,12 +15,12 @@ A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotoc
 
 Each layer can only narrow access. It can never widen it.
 
-| Layer             | Setting                                                          | Effect                                                                                                                                                                   |
-| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1. Server mode    | `ACCESS_MODE=readonly` (default) or `readwrite`                  | In `readonly` mode, write tools are never registered and Google is only asked for read-only scopes (`webmasters.readonly`, `analytics.readonly`).                        |
-| 2. Write families | `WRITE_TOOLSETS=gsc,indexing,ga4_admin,ga4_audiences_streams`    | Turns individual write families on or off. Google scopes are requested to match.                                                                                         |
-| 3. Per connection | Consent screen checkbox "Make changes (write)" / API key scope   | When a client connects, you approve it with your admin password and choose read or read+write. For example, ChatGPT can be read-only while Claude Desktop is read+write. |
-| 4. Allowlists     | `ALLOWED_GSC_SITES`, `ALLOWED_GA4_PROPERTIES`, `WRITE_ALLOWED_*` | Restricts which properties are visible at all, and which can be changed.                                                                                                 |
+| Layer             | Setting                                                                                    | Effect                                                                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Server mode    | `ACCESS_MODE=readonly` (default) or `readwrite`                                            | In `readonly` mode, write tools are never registered and Google is only asked for read-only scopes (`webmasters.readonly`, `analytics.readonly`).                        |
+| 2. Write families | `WRITE_TOOLSETS=gsc,indexing,ga4_admin,ga4_audiences_streams,gtm,gtm_publish`              | Turns individual write families on or off. Google scopes are requested to match.                                                                                         |
+| 3. Per connection | Consent screen checkbox "Make changes (write)" / API key scope                             | When a client connects, you approve it with your admin password and choose read or read+write. For example, ChatGPT can be read-only while Claude Desktop is read+write. |
+| 4. Allowlists     | `ALLOWED_GSC_SITES`, `ALLOWED_GA4_PROPERTIES`, `ALLOWED_GTM_CONTAINERS`, `WRITE_ALLOWED_*` | Restricts which properties are visible at all, and which can be changed.                                                                                                 |
 
 Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint` where it applies, so Claude and ChatGPT ask you to confirm before running them. Their descriptions start with `[WRITE]`. Every write attempt, successful or not, is written to the `audit_log` table and to the container logs. The 20 most recent appear on `/setup`.
 
@@ -42,6 +42,12 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 
 **GA4 audiences & streams (write, `ga4_audiences_streams`):** create, update and archive audiences; create, update and delete data streams; create and delete Measurement Protocol secrets
 
+**Tag Manager (read):** `gtm_list_containers`, `gtm_list_workspaces`, `gtm_workspace_status`, `gtm_list_tags`, `gtm_list_triggers`, `gtm_list_variables`, `gtm_get_entity`, `gtm_list_versions`, `gtm_get_live_version`, `gtm_audit_container` (finds tags with no trigger, paused tags, unused triggers and variables, duplicate names, and GA4 measurement IDs that don't match any GA4 property you can see)
+
+**Tag Manager (write, `gtm`):** `gtm_create_workspace`; create, update and delete tags, triggers and variables; `gtm_create_version` (a snapshot, not live)
+
+**Tag Manager publish (write, `gtm_publish`):** `gtm_publish_version` puts a version **live on your website**. As a safety check it requires the container ID (`GTM-XXXX`) to be typed back, and it reports the previously live version so you can roll back by publishing that one again.
+
 > The Indexing API is officially supported only for pages with `JobPosting` or `BroadcastEvent` structured data. The default quota is 200 publishes per day.
 
 ---
@@ -49,7 +55,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ## 1. Google Cloud setup (one time)
 
 1. Create or choose a project at <https://console.cloud.google.com>.
-2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_ and, if you will use it, _Web Search Indexing API_.
+2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_, _Tag Manager API_ and, if you will use it, _Web Search Indexing API_.
 3. Pick an auth mode:
 
 ### Option A: OAuth as yourself (recommended)
@@ -65,7 +71,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ### Option B: Service account
 
 1. Create a service account and a JSON key.
-2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) and **each** GA4 property (Viewer for read, Editor for write).
+2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), and **each** GTM container (Read, Edit, or Publish for publishing).
 3. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON, a file path, or base64).
 
 ---
@@ -154,26 +160,28 @@ In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
 
 ## Configuration reference
 
-| Variable                                                   | Default                      | Description                                                                         |
-| ---------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
-| `TRANSPORT`                                                | `stdio` (`http` in Docker)   | `http` or `stdio`                                                                   |
-| `PUBLIC_URL`                                               | –                            | Required for `http`. Must be https, except for localhost.                           |
-| `PORT` / `HOST`                                            | `3000` / `0.0.0.0`           | Listen address                                                                      |
-| `DATA_DIR`                                                 | `./data` (`/data` in Docker) | SQLite database location                                                            |
-| `ACCESS_MODE`                                              | `readonly`                   | `readonly` or `readwrite`                                                           |
-| `WRITE_TOOLSETS`                                           | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`               |
-| `ADMIN_PASSWORD`                                           | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`. |
-| `ENCRYPTION_KEY`                                           | –                            | Required in oauth mode, at least 32 chars                                           |
-| `MCP_API_KEYS`                                             | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.      |
-| `ACCESS_TOKEN_TTL_SECONDS`                                 | `3600`                       | OAuth access token lifetime                                                         |
-| `REFRESH_TOKEN_TTL_DAYS`                                   | `30`                         | Rotating refresh token lifetime                                                     |
-| `GOOGLE_AUTH_MODE`                                         | `oauth`                      | `oauth` or `service_account`                                                        |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                | –                            | OAuth client (oauth mode)                                                           |
-| `GOOGLE_OWNER_EMAIL`                                       | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected   |
-| `GOOGLE_SERVICE_ACCOUNT_JSON`                              | –                            | Key JSON, path, or base64 (service account mode)                                    |
-| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`             | all                          | Read allowlists                                                                     |
-| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES` | read lists                   | Write allowlists                                                                    |
-| `TRUST_PROXY`                                              | `true`                       | Trust one reverse-proxy hop for client IPs (rate limiting)                          |
+| Variable                                                   | Default                      | Description                                                                                           |
+| ---------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `TRANSPORT`                                                | `stdio` (`http` in Docker)   | `http` or `stdio`                                                                                     |
+| `PUBLIC_URL`                                               | –                            | Required for `http`. Must be https, except for localhost.                                             |
+| `PORT` / `HOST`                                            | `3000` / `0.0.0.0`           | Listen address                                                                                        |
+| `DATA_DIR`                                                 | `./data` (`/data` in Docker) | SQLite database location                                                                              |
+| `ACCESS_MODE`                                              | `readonly`                   | `readonly` or `readwrite`                                                                             |
+| `WRITE_TOOLSETS`                                           | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`           |
+| `ENABLED_SERVICES`                                         | all                          | Which products to expose: `gsc`, `ga4`, `gtm`. Fewer services = fewer tools for the AI to choose from |
+| `ADMIN_PASSWORD`                                           | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                   |
+| `ENCRYPTION_KEY`                                           | –                            | Required in oauth mode, at least 32 chars                                                             |
+| `MCP_API_KEYS`                                             | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                        |
+| `ACCESS_TOKEN_TTL_SECONDS`                                 | `3600`                       | OAuth access token lifetime                                                                           |
+| `REFRESH_TOKEN_TTL_DAYS`                                   | `30`                         | Rotating refresh token lifetime                                                                       |
+| `GOOGLE_AUTH_MODE`                                         | `oauth`                      | `oauth` or `service_account`                                                                          |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                | –                            | OAuth client (oauth mode)                                                                             |
+| `GOOGLE_OWNER_EMAIL`                                       | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected                     |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`                              | –                            | Key JSON, path, or base64 (service account mode)                                                      |
+| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`             | all                          | Read allowlists                                                                                       |
+| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES` | read lists                   | Write allowlists                                                                                      |
+| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`  | all / read list              | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                    |
+| `TRUST_PROXY`                                              | `true`                       | Trust one reverse-proxy hop for client IPs (rate limiting)                                            |
 
 ## Security notes
 

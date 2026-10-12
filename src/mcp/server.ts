@@ -32,6 +32,11 @@ function instructions(config: Config, canWrite: boolean): string {
     'GSC data lags ~2-3 days; GA4 supports relative dates like "28daysAgo", "yesterday", "today".',
     'For GA4, call ga4_get_metadata to find valid dimension/metric API names (including custom definitions).',
   ];
+  if (config.enabledServices.includes('gtm')) {
+    lines.push(
+      'Google Tag Manager (GTM): start with gtm_list_containers; gtm_audit_container gives a quick health check. Edits happen in a workspace, gtm_create_version snapshots it, and gtm_publish_version makes it live on the website.',
+    );
+  }
   if (canWrite) {
     lines.push(
       'This connection has WRITE access. Write tools change live Google configuration: confirm the exact change with the user before calling them.',

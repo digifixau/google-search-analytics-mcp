@@ -39,9 +39,14 @@ export const searchTool = defineTool({
       terms.length === 0 || terms.some((t) => text.toLowerCase().includes(t));
     const results: Array<{ id: string; title: string; url: string }> = [];
 
+    const enabled = ctx.config.enabledServices;
     const [sites, accounts] = await Promise.allSettled([
-      apis.searchconsole.sites.list(),
-      apis.analyticsAdmin.accountSummaries.list({ pageSize: 200 }),
+      enabled.includes('gsc')
+        ? apis.searchconsole.sites.list()
+        : Promise.reject(new Error('disabled')),
+      enabled.includes('ga4')
+        ? apis.analyticsAdmin.accountSummaries.list({ pageSize: 200 })
+        : Promise.reject(new Error('disabled')),
     ]);
     if (sites.status === 'fulfilled') {
       for (const s of sites.value.data.siteEntry ?? []) {

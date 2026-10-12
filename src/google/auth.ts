@@ -10,6 +10,10 @@ export const GOOGLE_SCOPES = {
   gaRead: 'https://www.googleapis.com/auth/analytics.readonly',
   gaEdit: 'https://www.googleapis.com/auth/analytics.edit',
   indexing: 'https://www.googleapis.com/auth/indexing',
+  gtmRead: 'https://www.googleapis.com/auth/tagmanager.readonly',
+  gtmEdit: 'https://www.googleapis.com/auth/tagmanager.edit.containers',
+  gtmVersions: 'https://www.googleapis.com/auth/tagmanager.edit.containerversions',
+  gtmPublish: 'https://www.googleapis.com/auth/tagmanager.publish',
 } as const;
 
 const IDENTITY_SCOPES = ['openid', 'email'];
@@ -17,16 +21,26 @@ const KV_KEY = 'google.oauth';
 
 /** The Google OAuth scopes this server needs for its configured access mode and toolsets. */
 export function requiredGoogleScopes(config: Config): string[] {
-  if (config.accessMode === 'readonly') return [GOOGLE_SCOPES.gscRead, GOOGLE_SCOPES.gaRead];
-  const toolsets = new Set(config.writeToolsets);
-  const scopes: string[] = [
-    toolsets.has('gsc') ? GOOGLE_SCOPES.gscWrite : GOOGLE_SCOPES.gscRead,
-    GOOGLE_SCOPES.gaRead,
-  ];
-  if (toolsets.has('ga4_admin') || toolsets.has('ga4_audiences_streams')) {
-    scopes.push(GOOGLE_SCOPES.gaEdit);
+  const services = new Set(config.enabledServices);
+  const write = config.accessMode === 'readwrite';
+  const toolsets = new Set(write ? config.writeToolsets : []);
+  const scopes: string[] = [];
+  if (services.has('gsc')) {
+    scopes.push(toolsets.has('gsc') ? GOOGLE_SCOPES.gscWrite : GOOGLE_SCOPES.gscRead);
+    if (toolsets.has('indexing')) scopes.push(GOOGLE_SCOPES.indexing);
   }
-  if (toolsets.has('indexing')) scopes.push(GOOGLE_SCOPES.indexing);
+  if (services.has('ga4')) {
+    scopes.push(GOOGLE_SCOPES.gaRead);
+    if (toolsets.has('ga4_admin') || toolsets.has('ga4_audiences_streams')) {
+      scopes.push(GOOGLE_SCOPES.gaEdit);
+    }
+  }
+  if (services.has('gtm')) {
+    // tagmanager.readonly is not implied by the edit scopes, so it is always requested.
+    scopes.push(GOOGLE_SCOPES.gtmRead);
+    if (toolsets.has('gtm')) scopes.push(GOOGLE_SCOPES.gtmEdit, GOOGLE_SCOPES.gtmVersions);
+    if (toolsets.has('gtm_publish')) scopes.push(GOOGLE_SCOPES.gtmPublish);
+  }
   return scopes;
 }
 

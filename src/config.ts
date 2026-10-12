@@ -1,7 +1,17 @@
 import { z } from 'zod';
 
-export const WRITE_TOOLSETS = ['gsc', 'indexing', 'ga4_admin', 'ga4_audiences_streams'] as const;
+export const WRITE_TOOLSETS = [
+  'gsc',
+  'indexing',
+  'ga4_admin',
+  'ga4_audiences_streams',
+  'gtm',
+  'gtm_publish',
+] as const;
 export type WriteToolset = (typeof WRITE_TOOLSETS)[number];
+
+export const SERVICES = ['gsc', 'ga4', 'gtm'] as const;
+export type Service = (typeof SERVICES)[number];
 
 const csv = z
   .string()
@@ -31,6 +41,7 @@ const envSchema = z.object({
   TRANSPORT: z.enum(['stdio', 'http']).default('stdio'),
   ACCESS_MODE: z.enum(['readonly', 'readwrite']).default('readonly'),
   WRITE_TOOLSETS: csv,
+  ENABLED_SERVICES: csv,
 
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -54,6 +65,8 @@ const envSchema = z.object({
   ALLOWED_GA4_PROPERTIES: csv,
   WRITE_ALLOWED_GSC_SITES: csv,
   WRITE_ALLOWED_GA4_PROPERTIES: csv,
+  ALLOWED_GTM_CONTAINERS: csv,
+  WRITE_ALLOWED_GTM_CONTAINERS: csv,
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
@@ -70,6 +83,7 @@ export interface Config {
   transport: 'stdio' | 'http';
   accessMode: AccessMode;
   writeToolsets: WriteToolset[];
+  enabledServices: Service[];
   host: string;
   port: number;
   publicUrl?: URL;
@@ -92,6 +106,8 @@ export interface Config {
     ga4Properties: string[];
     writeGscSites: string[];
     writeGa4Properties: string[];
+    gtmContainers: string[];
+    writeGtmContainers: string[];
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -152,6 +168,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  const unknownServices = e.ENABLED_SERVICES.filter(
+    (t) => !(SERVICES as readonly string[]).includes(t),
+  );
+  if (unknownServices.length > 0) {
+    throw new ConfigError(
+      `ENABLED_SERVICES contains unknown values: ${unknownServices.join(', ')}. Valid: ${SERVICES.join(', ')}`,
+    );
+  }
+
   let publicUrl: URL | undefined;
   if (e.PUBLIC_URL) {
     try {
@@ -166,6 +191,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     accessMode: e.ACCESS_MODE,
     writeToolsets:
       e.WRITE_TOOLSETS.length > 0 ? (e.WRITE_TOOLSETS as WriteToolset[]) : [...WRITE_TOOLSETS],
+    enabledServices:
+      e.ENABLED_SERVICES.length > 0 ? (e.ENABLED_SERVICES as Service[]) : [...SERVICES],
     host: e.HOST,
     port: e.PORT,
     publicUrl,
@@ -188,6 +215,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ga4Properties: e.ALLOWED_GA4_PROPERTIES.map(normalizePropertyId),
       writeGscSites: e.WRITE_ALLOWED_GSC_SITES,
       writeGa4Properties: e.WRITE_ALLOWED_GA4_PROPERTIES.map(normalizePropertyId),
+      gtmContainers: e.ALLOWED_GTM_CONTAINERS.map(normalizeContainerRef),
+      writeGtmContainers: e.WRITE_ALLOWED_GTM_CONTAINERS.map(normalizeContainerRef),
     },
     logLevel: e.LOG_LEVEL,
   };
@@ -239,6 +268,12 @@ function validateConfig(config: Config): void {
       throw new ConfigError('PUBLIC_URL must use https:// (only localhost may use http://)');
     }
   }
+}
+
+/** GTM containers are referenced by public ID (`GTM-ABC123`, case-insensitive) or numeric container ID. */
+export function normalizeContainerRef(value: string): string {
+  const v = value.trim();
+  return /^gtm-/i.test(v) ? v.toUpperCase() : v.replace(/^.*containers\//, '');
 }
 
 /** Accepts `123456`, `properties/123456` and returns `123456`. */

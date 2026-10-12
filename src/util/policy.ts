@@ -96,6 +96,29 @@ export class AccessPolicy {
     return id;
   }
 
+  /**
+   * GTM container allowlist. Entries may be public IDs (GTM-XXXX) or numeric container IDs;
+   * the caller passes both so either form matches.
+   */
+  containerAllowed(
+    containerId: string,
+    publicId: string | undefined,
+    mode: 'read' | 'write' = 'read',
+  ): boolean {
+    const matches = (list: string[]) =>
+      list.length === 0 ||
+      list.includes(containerId) ||
+      (!!publicId && list.includes(publicId.toUpperCase()));
+    const { gtmContainers, writeGtmContainers } = this.config.allowlists;
+    if (!matches(gtmContainers)) return false;
+    return mode === 'read' || matches(writeGtmContainers);
+  }
+
+  get hasContainerAllowlist(): boolean {
+    const { gtmContainers, writeGtmContainers } = this.config.allowlists;
+    return gtmContainers.length > 0 || writeGtmContainers.length > 0;
+  }
+
   /** Extracts and checks the property from a resource name like `properties/123/customDimensions/456`. */
   assertResourceName(name: string, mode: 'read' | 'write' = 'read'): string {
     const match = /^properties\/(\d+)\//.exec(name);

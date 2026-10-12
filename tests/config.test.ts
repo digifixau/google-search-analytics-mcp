@@ -8,7 +8,15 @@ describe('config', () => {
     const c = testConfig();
     expect(c.accessMode).toBe('readonly');
     expect(c.transport).toBe('stdio');
-    expect(c.writeToolsets).toEqual(['gsc', 'indexing', 'ga4_admin', 'ga4_audiences_streams']);
+    expect(c.writeToolsets).toEqual([
+      'gsc',
+      'indexing',
+      'ga4_admin',
+      'ga4_audiences_streams',
+      'gtm',
+      'gtm_publish',
+    ]);
+    expect(c.enabledServices).toEqual(['gsc', 'ga4', 'gtm']);
   });
 
   it('requires PUBLIC_URL (https) and ADMIN_PASSWORD for http', () => {
@@ -66,11 +74,40 @@ describe('config', () => {
     expect(requiredGoogleScopes(testConfig())).toEqual([
       GOOGLE_SCOPES.gscRead,
       GOOGLE_SCOPES.gaRead,
+      GOOGLE_SCOPES.gtmRead,
     ]);
     const rw = requiredGoogleScopes(
       testConfig({ ACCESS_MODE: 'readwrite', WRITE_TOOLSETS: 'ga4_admin' }),
     );
-    expect(rw).toEqual([GOOGLE_SCOPES.gscRead, GOOGLE_SCOPES.gaRead, GOOGLE_SCOPES.gaEdit]);
+    expect(rw).toEqual([
+      GOOGLE_SCOPES.gscRead,
+      GOOGLE_SCOPES.gaRead,
+      GOOGLE_SCOPES.gaEdit,
+      GOOGLE_SCOPES.gtmRead,
+    ]);
+  });
+
+  it('requests GTM edit and publish scopes only when those toolsets are on', () => {
+    const all = requiredGoogleScopes(testConfig({ ACCESS_MODE: 'readwrite' }));
+    expect(all).toEqual(
+      expect.arrayContaining([
+        GOOGLE_SCOPES.gtmRead,
+        GOOGLE_SCOPES.gtmEdit,
+        GOOGLE_SCOPES.gtmVersions,
+        GOOGLE_SCOPES.gtmPublish,
+      ]),
+    );
+    const noPublish = requiredGoogleScopes(
+      testConfig({ ACCESS_MODE: 'readwrite', WRITE_TOOLSETS: 'gtm' }),
+    );
+    expect(noPublish).toContain(GOOGLE_SCOPES.gtmEdit);
+    expect(noPublish).not.toContain(GOOGLE_SCOPES.gtmPublish);
+    expect(
+      requiredGoogleScopes(
+        testConfig({ ACCESS_MODE: 'readwrite', ENABLED_SERVICES: 'gsc,ga4' }),
+      ).some((s) => s.includes('tagmanager')),
+    ).toBe(false);
+    expect(() => testConfig({ ENABLED_SERVICES: 'gsc,ads' })).toThrow(/ads/);
   });
 
   it('treats webmasters as a superset of webmasters.readonly', () => {
