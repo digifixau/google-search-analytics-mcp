@@ -1,0 +1,29 @@
+# Works as-is with `docker compose up -d` and as a Coolify "Docker Compose" resource.
+# Put secrets in .env (see .env.example) or in Coolify's environment variables UI.
+services:
+  mcp:
+    build: .
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
+      ACCESS_MODE: ${ACCESS_MODE:-readonly}
+      WRITE_TOOLSETS: ${WRITE_TOOLSETS:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      MCP_API_KEYS: ${MCP_API_KEYS:-}
+      GOOGLE_AUTH_MODE: ${GOOGLE_AUTH_MODE:-oauth}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_OWNER_EMAIL: ${GOOGLE_OWNER_EMAIL:-}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      ALLOWED_GSC_SITES: ${ALLOWED_GSC_SITES:-}
+      ALLOWED_GA4_PROPERTIES: ${ALLOWED_GA4_PROPERTIES:-}
+      WRITE_ALLOWED_GSC_SITES: ${WRITE_ALLOWED_GSC_SITES:-}
+      WRITE_ALLOWED_GA4_PROPERTIES: ${WRITE_ALLOWED_GA4_PROPERTIES:-}
+    volumes:
+      - mcp-data:/data
+
+volumes:
+  mcp-data:
