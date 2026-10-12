@@ -111,13 +111,11 @@ export function createHttpApp(app: AppContext): express.Express {
     } catch (error) {
       console.error('[mcp] request failed', error);
       if (!res.headersSent) {
-        res
-          .status(500)
-          .json({
-            jsonrpc: '2.0',
-            error: { code: -32603, message: 'Internal server error' },
-            id: null,
-          });
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
       }
     }
   });

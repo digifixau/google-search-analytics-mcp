@@ -9,6 +9,8 @@ A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotoc
 
 ---
 
+**Deploying?** Start with the **[deploy guide](docs/DEPLOY.md)**.
+
 ## How read-only and read-write work
 
 Each layer can only narrow access. It can never widen it.
@@ -56,7 +58,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 2. In **APIs & Services → Credentials → Create credentials → OAuth client ID**, choose **Web application** and add these redirect URIs:
    - `https://YOUR-DOMAIN/oauth/google/callback` (remote server)
    - `http://localhost:53682/oauth/google/callback` (only if you use the local `google-auth` command)
-3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Optionally set `GOOGLE_OWNER_EMAIL` to lock the server to your account.
+3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_OWNER_EMAIL` (your Google address; required for remote deployments, so no other Google account can ever be connected).
 
 > If the consent screen is in **Testing** status, Google expires refresh tokens after 7 days. Publish the app (internal apps in a Workspace org are fine) to avoid having to reconnect weekly.
 
@@ -70,6 +72,8 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 
 ## 2. Deploy on Coolify
 
+> **New here?** Follow the step-by-step **[deploy guide](docs/DEPLOY.md)**. It covers Google Cloud, Coolify, connecting your AI apps, day-2 operations and troubleshooting. Below is the short version.
+
 1. **New Resource → Public/Private Repository** → this repo, **Build Pack: Dockerfile**. (The **Docker Compose** pack with `docker-compose.yml` also works.)
 2. **Ports Exposes:** `3000`. Assign your domain, e.g. `https://mcp.example.com`.
 3. **Persistent Storage:** add a volume mounted at `/data`. It holds the SQLite DB with the encrypted Google token and OAuth clients.
@@ -77,7 +81,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
    ```env
    PUBLIC_URL=https://mcp.example.com
    ACCESS_MODE=readonly            # or readwrite
-   ADMIN_PASSWORD=<long password>
+   ADMIN_PASSWORD=<openssl rand -base64 24>
    ENCRYPTION_KEY=<openssl rand -hex 32>
    GOOGLE_CLIENT_ID=...
    GOOGLE_CLIENT_SECRET=...
@@ -158,14 +162,14 @@ In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
 | `DATA_DIR`                                                 | `./data` (`/data` in Docker) | SQLite database location                                                            |
 | `ACCESS_MODE`                                              | `readonly`                   | `readonly` or `readwrite`                                                           |
 | `WRITE_TOOLSETS`                                           | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`               |
-| `ADMIN_PASSWORD`                                           | –                            | Required for `http`, at least 12 chars. Approves connections and protects `/setup`. |
+| `ADMIN_PASSWORD`                                           | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`. |
 | `ENCRYPTION_KEY`                                           | –                            | Required in oauth mode, at least 32 chars                                           |
 | `MCP_API_KEYS`                                             | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.      |
 | `ACCESS_TOKEN_TTL_SECONDS`                                 | `3600`                       | OAuth access token lifetime                                                         |
 | `REFRESH_TOKEN_TTL_DAYS`                                   | `30`                         | Rotating refresh token lifetime                                                     |
 | `GOOGLE_AUTH_MODE`                                         | `oauth`                      | `oauth` or `service_account`                                                        |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                | –                            | OAuth client (oauth mode)                                                           |
-| `GOOGLE_OWNER_EMAIL`                                       | –                            | Only this Google account may be connected                                           |
+| `GOOGLE_OWNER_EMAIL`                                       | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected   |
 | `GOOGLE_SERVICE_ACCOUNT_JSON`                              | –                            | Key JSON, path, or base64 (service account mode)                                    |
 | `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`             | all                          | Read allowlists                                                                     |
 | `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES` | read lists                   | Write allowlists                                                                    |
@@ -173,11 +177,24 @@ In stdio mode, the connection gets whatever `ACCESS_MODE` allows.
 
 ## Security notes
 
-- Every OAuth connection needs your admin password at consent time. Password attempts are rate-limited per IP (10 per 15 minutes).
+**Who can do what.** Knowing the server URL gets someone nothing on its own:
+
+| Someone with the link tries to…                   | What happens                                                                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Call `/mcp` directly                              | `401`: every request needs a token issued by this server (or a configured API key).                                  |
+| Add it as a connector in their own Claude/ChatGPT | They reach the consent page, but approving needs `ADMIN_PASSWORD`. Without it no token is issued.                    |
+| Open `/setup`                                     | Password prompt; nothing is shown before sign-in.                                                                    |
+| Connect their own Google account                  | Impossible: Google can only be linked from `/setup`, and only the verified `GOOGLE_OWNER_EMAIL` account is accepted. |
+
+**Password protection.** Wrong passwords are rate-limited at 10 per IP per 15 minutes. After 30 failures from any mix of IPs, all password logins lock for 15 minutes; this also locks you out briefly, which is the trade-off for stopping distributed guessing. Counters survive restarts. Lockouts are logged as `[security]` lines in the container logs.
+
+**Other safeguards**
+
 - Access and refresh tokens are stored only as SHA-256 hashes. Refresh tokens rotate on every use, and a reused refresh token is rejected.
-- Dynamic client registration only accepts `https` redirect URIs, or `http` on localhost.
-- Revoke any connected client from `/setup`. To revoke Google access entirely, use `/setup → Disconnect` and <https://myaccount.google.com/permissions>.
+- Dynamic client registration accepts any `https` redirect URI (or `http` on localhost) and is limited to 20 registrations per hour per IP. Registrations that never get approved are deleted after 24 hours.
+- Review and revoke connected clients on `/setup`. To revoke Google access entirely, use `/setup → Disconnect` and <https://myaccount.google.com/permissions>.
 - The `/mcp` endpoint is stateless and validates the `Host` header against `PUBLIC_URL`.
+- If you suspect the password leaked: change `ADMIN_PASSWORD`, redeploy, and revoke any unknown clients on `/setup`.
 
 ## Development
 

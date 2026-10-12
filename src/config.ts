@@ -224,9 +224,14 @@ function validateConfig(config: Config): void {
         'TRANSPORT=http requires PUBLIC_URL (the externally reachable base URL)',
       );
     }
-    if (!config.adminPassword || config.adminPassword.length < 12) {
+    if (!config.adminPassword || config.adminPassword.length < 16) {
       throw new ConfigError(
-        'TRANSPORT=http requires ADMIN_PASSWORD with at least 12 characters (used to approve connections)',
+        'TRANSPORT=http requires ADMIN_PASSWORD with at least 16 characters (used to approve connections; generate one with `openssl rand -base64 24`)',
+      );
+    }
+    if (config.google.authMode === 'oauth' && !config.google.ownerEmail) {
+      throw new ConfigError(
+        'TRANSPORT=http with GOOGLE_AUTH_MODE=oauth requires GOOGLE_OWNER_EMAIL, so only your Google account can ever be connected',
       );
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(config.publicUrl.hostname);

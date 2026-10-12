@@ -148,7 +148,9 @@ export class GoogleAuthManager {
         idToken: tokens.id_token,
         audience: this.config.google.clientId!,
       });
-      email = ticket.getPayload()?.email?.toLowerCase();
+      const payload = ticket.getPayload();
+      // Only trust an email Google has verified.
+      if (payload?.email_verified) email = payload.email?.toLowerCase();
     }
     const owner = this.config.google.ownerEmail;
     if (owner && email !== owner) {

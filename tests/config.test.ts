@@ -12,21 +12,37 @@ describe('config', () => {
   });
 
   it('requires PUBLIC_URL (https) and ADMIN_PASSWORD for http', () => {
+    const http = {
+      TRANSPORT: 'http',
+      PUBLIC_URL: 'https://mcp.example.com/',
+      ADMIN_PASSWORD: 'a'.repeat(16),
+      GOOGLE_OWNER_EMAIL: 'Owner@Example.com',
+    };
     expect(() => testConfig({ TRANSPORT: 'http' })).toThrow(ConfigError);
-    expect(() =>
-      testConfig({
-        TRANSPORT: 'http',
-        PUBLIC_URL: 'http://mcp.example.com',
-        ADMIN_PASSWORD: 'a'.repeat(12),
-      }),
-    ).toThrow(/https/);
-    expect(
-      testConfig({
-        TRANSPORT: 'http',
-        PUBLIC_URL: 'https://mcp.example.com/',
-        ADMIN_PASSWORD: 'a'.repeat(12),
-      }).publicUrl?.href,
-    ).toBe('https://mcp.example.com/');
+    expect(() => testConfig({ ...http, PUBLIC_URL: 'http://mcp.example.com' })).toThrow(/https/);
+    expect(testConfig(http).publicUrl?.href).toBe('https://mcp.example.com/');
+    expect(testConfig(http).google.ownerEmail).toBe('owner@example.com');
+  });
+
+  it('enforces a 16+ character admin password for http', () => {
+    const http = {
+      TRANSPORT: 'http',
+      PUBLIC_URL: 'https://mcp.example.com',
+      GOOGLE_OWNER_EMAIL: 'owner@example.com',
+    };
+    expect(() => testConfig({ ...http, ADMIN_PASSWORD: 'a'.repeat(15) })).toThrow(/16 characters/);
+    expect(() => testConfig({ ...http, ADMIN_PASSWORD: 'a'.repeat(16) })).not.toThrow();
+  });
+
+  it('requires GOOGLE_OWNER_EMAIL for remote oauth deployments only', () => {
+    const http = {
+      TRANSPORT: 'http',
+      PUBLIC_URL: 'https://mcp.example.com',
+      ADMIN_PASSWORD: 'a'.repeat(16),
+    };
+    expect(() => testConfig(http)).toThrow(/GOOGLE_OWNER_EMAIL/);
+    // stdio (local) use does not need it
+    expect(() => testConfig({ TRANSPORT: 'stdio' })).not.toThrow();
   });
 
   it('rejects unknown write toolsets and missing Google credentials', () => {

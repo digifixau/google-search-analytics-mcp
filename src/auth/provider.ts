@@ -19,11 +19,14 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { MCP_SCOPES, type Config } from '../config.js';
 import { randomToken, safeEqual, sha256 } from '../store/crypto.js';
-import type { Db } from '../store/db.js';
+import { KvStore, type Db } from '../store/db.js';
+import { LoginGuard } from './guard.js';
 import { consentPage, page } from './pages.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
+/** Registered clients that never obtain a token are forgotten after this long. */
+const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface PendingAuthorization {
   client: OAuthClientInformationFull;
@@ -77,13 +80,14 @@ class SqliteClientsStore implements OAuthRegisteredClientsStore {
 export class OwnerOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: SqliteClientsStore;
   private readonly pending = new Map<string, PendingAuthorization>();
-  private readonly failures = new Map<string, { count: number; resetAt: number }>();
+  private readonly guard: LoginGuard;
 
   constructor(
     private readonly config: Config,
     private readonly db: Db,
   ) {
     this.clientsStore = new SqliteClientsStore(db);
+    this.guard = new LoginGuard(new KvStore(db));
   }
 
   get mcpUrl(): URL {
@@ -142,18 +146,13 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     });
   }
 
-  /** Simple per-IP brute-force guard for password prompts. */
+  /** Brute-force guard for password prompts (per IP and server-wide). */
   checkRateLimit(ip: string): boolean {
-    const entry = this.failures.get(ip);
-    return !entry || entry.resetAt < Date.now() || entry.count < 10;
+    return this.guard.allowed(ip);
   }
 
   recordFailure(ip: string): void {
-    const now = Date.now();
-    const entry = this.failures.get(ip);
-    if (!entry || entry.resetAt < now)
-      this.failures.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
-    else entry.count++;
+    this.guard.recordFailure(ip);
   }
 
   verifyPassword(password: string | undefined): boolean {
@@ -382,6 +381,12 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     const now = Date.now();
     this.db.prepare('DELETE FROM auth_codes WHERE expires_at < ?').run(now);
     this.db.prepare('DELETE FROM tokens WHERE expires_at < ?').run(now);
+    // Open dynamic registration means anyone can register a client; drop ones that never got approved.
+    this.db
+      .prepare(
+        'DELETE FROM oauth_clients WHERE created_at < ? AND client_id NOT IN (SELECT DISTINCT client_id FROM tokens)',
+      )
+      .run(now - UNUSED_CLIENT_TTL_MS);
     for (const [id, p] of this.pending) if (p.expiresAt < now) this.pending.delete(id);
   }
 }

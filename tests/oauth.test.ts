@@ -1,27 +1,28 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Response } from 'express';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { OwnerOAuthProvider } from '../src/auth/provider.js';
-import { openDb } from '../src/store/db.js';
+import { openDb, type Db } from '../src/store/db.js';
 import { testConfig } from './helpers.js';
 
-function setup(mode: 'readonly' | 'readwrite' = 'readwrite') {
+function setup(mode: 'readonly' | 'readwrite' = 'readwrite', db: Db = openDb(':memory:')) {
   const config = testConfig({
     TRANSPORT: 'http',
     PUBLIC_URL: 'https://mcp.example.com',
     ADMIN_PASSWORD: 'correct-horse-battery',
+    GOOGLE_OWNER_EMAIL: 'owner@example.com',
     ACCESS_MODE: mode,
     MCP_API_KEYS: 'ci=abcdefghijklmnopqrstuvwxyz0123:read',
   });
-  const provider = new OwnerOAuthProvider(config, openDb(':memory:'));
+  const provider = new OwnerOAuthProvider(config, db);
   const client = provider.clientsStore.registerClient({
     client_id: 'client-1',
     client_name: 'Claude',
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
     token_endpoint_auth_method: 'none',
   } as OAuthClientInformationFull);
-  return { provider, client };
+  return { provider, client, db };
 }
 
 function fakeRes() {
@@ -155,5 +156,73 @@ describe('OwnerOAuthProvider', () => {
     for (let i = 0; i < 10; i++) provider.recordFailure('9.9.9.9');
     expect(provider.checkRateLimit('9.9.9.9')).toBe(false);
     expect(provider.checkRateLimit('8.8.8.8')).toBe(true);
+  });
+
+  describe('password lockout', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('locks every IP after 30 failures spread across many IPs, then recovers', () => {
+      vi.useFakeTimers();
+      const { provider } = setup();
+      const spam = vi.spyOn(console, 'error').mockImplementation(() => {});
+      for (let i = 0; i < 30; i++) provider.recordFailure(`10.0.0.${i}`);
+      expect(provider.checkRateLimit('203.0.113.7')).toBe(false);
+      expect(spam).toHaveBeenCalledWith(expect.stringContaining('[security]'));
+      vi.advanceTimersByTime(15 * 60 * 1000 + 1);
+      expect(provider.checkRateLimit('203.0.113.7')).toBe(true);
+      spam.mockRestore();
+    });
+
+    it('blocks the correct password on the consent page while locked', async () => {
+      const { provider, client } = setup();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      for (let i = 0; i < 30; i++) provider.recordFailure(`10.0.1.${i}`);
+      const { requestId } = await startAuth(provider, client);
+      const out = provider.handleConsent(
+        { request_id: requestId, password: 'correct-horse-battery', decision: 'approve' },
+        '198.51.100.1',
+      );
+      expect(out).toMatchObject({ kind: 'page', status: 429 });
+      vi.mocked(console.error).mockRestore();
+    });
+
+    it('keeps counters across restarts', () => {
+      const db = openDb(':memory:');
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const first = setup('readwrite', db).provider;
+      for (let i = 0; i < 10; i++) first.recordFailure('9.9.9.9');
+      const restarted = new OwnerOAuthProvider(
+        testConfig({
+          TRANSPORT: 'http',
+          PUBLIC_URL: 'https://mcp.example.com',
+          ADMIN_PASSWORD: 'correct-horse-battery',
+          GOOGLE_OWNER_EMAIL: 'owner@example.com',
+        }),
+        db,
+      );
+      expect(restarted.checkRateLimit('9.9.9.9')).toBe(false);
+      vi.mocked(console.error).mockRestore();
+    });
+  });
+
+  it('forgets registrations that never got approved after 24h', async () => {
+    const { provider, client, db } = setup();
+    const unused = provider.clientsStore.registerClient({
+      client_id: 'spam',
+      redirect_uris: ['https://spam.example/cb'],
+    } as OAuthClientInformationFull);
+    // Approve client-1 so it holds tokens.
+    const { requestId } = await startAuth(provider, client);
+    const ok = provider.handleConsent(
+      { request_id: requestId, password: 'correct-horse-battery', decision: 'approve' },
+      'ip',
+    );
+    const code = new URL((ok as { location: string }).location).searchParams.get('code')!;
+    await provider.exchangeAuthorizationCode(client, code);
+
+    db.prepare('UPDATE oauth_clients SET created_at = ?').run(Date.now() - 25 * 60 * 60 * 1000);
+    await startAuth(provider, client); // authorize() runs the sweep
+    expect(provider.clientsStore.getClient(unused.client_id)).toBeUndefined();
+    expect(provider.clientsStore.getClient(client.client_id)).toBeDefined();
   });
 });

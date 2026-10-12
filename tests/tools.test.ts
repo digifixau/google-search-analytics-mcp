@@ -109,14 +109,12 @@ describe('gsc tools', () => {
   });
 
   it('maps Google errors to actionable messages', async () => {
-    const query = vi
-      .fn()
-      .mockRejectedValue({
-        response: {
-          status: 403,
-          data: { error: { message: 'User does not have sufficient permission for site' } },
-        },
-      });
+    const query = vi.fn().mockRejectedValue({
+      response: {
+        status: 403,
+        data: { error: { message: 'User does not have sufficient permission for site' } },
+      },
+    });
     const apis = { searchconsole: { searchanalytics: { query } } } as unknown as GoogleApis;
     const { client } = await connectClient(testConfig(), READ, apis);
     const res = await client.callTool({
