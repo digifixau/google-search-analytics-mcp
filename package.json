@@ -1,0 +1,45 @@
+{
+  "name": "google-search-analytics-mcp",
+  "version": "0.1.0",
+  "description": "Self-hostable, single-tenant MCP server for Google Search Console and Google Analytics 4 with read-only or read-write access.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "google-search-analytics-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "google-auth": "node dist/index.js google-auth",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.3.0",
+    "google-auth-library": "^11.2.0",
+    "googleapis": "^185.0.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}
