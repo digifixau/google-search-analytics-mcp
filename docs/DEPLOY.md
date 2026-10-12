@@ -8,7 +8,9 @@ The main path uses **Coolify**. If you use another host, [section 7](#7-other-ho
 
 ```
 Claude / ChatGPT ──HTTPS──▶ https://mcp.example.com/mcp      ──▶ Google Search Console + GA4
-                 └─HTTPS──▶ https://mcp.example.com/mcp/gtm  ──▶ Google Tag Manager
+                 ├─HTTPS──▶ https://mcp.example.com/mcp/gtm      ──▶ Google Tag Manager
+                 ├─HTTPS──▶ https://mcp.example.com/mcp/youtube  ──▶ YouTube Analytics
+                 └─HTTPS──▶ https://mcp.example.com/mcp/merchant ──▶ Google Merchant Center
                              (your Coolify server)          (as your Google account)
 ```
 
@@ -59,6 +61,8 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
 - Google Analytics Data API
 - Google Analytics Admin API
 - Tag Manager API
+- YouTube Analytics API and YouTube Data API v3
+- Merchant API
 - Web Search Indexing API (only if you'll use `indexing_publish`)
 
 ### 2.2a OAuth mode (recommended)
@@ -80,6 +84,8 @@ Open <https://console.cloud.google.com> and create a project, e.g. "MCP Server",
    - **Search Console** → each property → Settings → Users and permissions → Add user. Use **Full** for reading. Use **Owner** if you want sitemap, site or Indexing API changes.
    - **GA4** → Admin → Property access management → **+** → add the email. Use **Viewer** for reading, **Editor** for writes.
    - **Tag Manager** → Admin → Container → User Management → **+** → add the email. Use **Read** for auditing, **Edit** for changes, **Publish** to let it publish.
+   - **Merchant Center** → Settings → People and access → add the email with **Standard** access (Admin is needed once for `merchant_register_gcp_project`).
+   - **YouTube** doesn't support service accounts. Use OAuth mode if you need the YouTube MCP, or set `ENABLED_SERVICES` without `youtube`.
 3. Encode the key for the env var: `base64 -w0 key.json` (macOS: `base64 -i key.json`).
 
 ---
@@ -134,6 +140,8 @@ Click **Deploy** and watch **Logs**. A healthy start ends with:
 [gsa-mcp] HTTP server listening on 0.0.0.0:3000 (readonly)
 [gsa-mcp]   Google Search Console & Analytics MCP: https://mcp.example.com/mcp
 [gsa-mcp]   Google Tag Manager MCP: https://mcp.example.com/mcp/gtm
+[gsa-mcp]   YouTube Analytics MCP: https://mcp.example.com/mcp/youtube
+[gsa-mcp]   Google Merchant Center MCP: https://mcp.example.com/mcp/merchant
 [gsa-mcp] Google is not connected yet: open https://mcp.example.com/setup
 ```
 
@@ -155,10 +163,12 @@ In service-account mode, `/setup` shows the service account email instead and th
 
 The app serves several MCPs. Add **each one you want as a separate connector**:
 
-| MCP                               | URL                               |
-| --------------------------------- | --------------------------------- |
-| Google Search Console & Analytics | `https://mcp.example.com/mcp`     |
-| Google Tag Manager                | `https://mcp.example.com/mcp/gtm` |
+| MCP                               | URL                                    |
+| --------------------------------- | -------------------------------------- |
+| Google Search Console & Analytics | `https://mcp.example.com/mcp`          |
+| Google Tag Manager                | `https://mcp.example.com/mcp/gtm`      |
+| YouTube Analytics                 | `https://mcp.example.com/mcp/youtube`  |
+| Google Merchant Center            | `https://mcp.example.com/mcp/merchant` |
 
 | App                               | Steps                                                                                                                                                                  |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -176,6 +186,15 @@ Repeat for each MCP. Every connector is approved on its own, so read/write can d
 
 ---
 
+### 5.1 One-time setup per product
+
+- **YouTube:** when you click **Connect Google** on `/setup`, Google asks which channel to use if your account manages several (personal or Brand Account). The YouTube MCP sees that channel. To switch, click **Reconnect Google** and pick the other one.
+- **Merchant Center:** Google requires the Cloud project to be registered with each Merchant Center account before the API answers. Connect the Merchant MCP with **Make changes** ticked (read-write mode), then ask the AI:
+
+  > "Register this server's Google Cloud project with Merchant Center account 123456789 using developer email you@example.com."
+
+  This runs `merchant_register_gcp_project` once. Afterwards the connection can be read-only if you prefer.
+
 ## 6. Check it works
 
 Ask your AI app:
@@ -184,6 +203,10 @@ Ask your AI app:
 
 Then try:
 
+> "Which of my Merchant Center products are disapproved, and why?" (Merchant MCP)
+>
+> "What were my top 10 YouTube videos by watch time last month, and where did their traffic come from?" (YouTube MCP)
+>
 > "Compare the last 28 days of organic search clicks for &lt;site&gt; with the previous period and show the biggest losing queries."
 
 If you get an error, see [Troubleshooting](#troubleshooting).
@@ -238,17 +261,19 @@ Then continue from [step 4](#4-connect-google-oauth-mode).
 
 ## Troubleshooting
 
-| Symptom                                                   | Fix                                                                                                                                                                        |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Container exits with `Configuration error: …`             | Fix the named variable. Common causes: `PUBLIC_URL` not https, `ADMIN_PASSWORD` under 16 characters, missing `GOOGLE_OWNER_EMAIL`.                                         |
-| Google says `redirect_uri_mismatch`                       | The OAuth client's redirect URI must be exactly `https://<your domain>/oauth/google/callback`.                                                                             |
-| "Signed in as …, but GOOGLE_OWNER_EMAIL is …"             | You picked a different Google account. Choose the owner account, or fix the variable.                                                                                      |
-| "Google did not return a refresh token"                   | Remove the app at <https://myaccount.google.com/permissions> and click Connect Google again.                                                                               |
-| Works for a week, then "refresh token revoked or expired" | The OAuth consent screen is still in _Testing_. Publish it (step 2.2a) and reconnect.                                                                                      |
-| "A required Google API is disabled"                       | Enable the API named in the message (step 2.1), wait a minute, retry.                                                                                                      |
-| 403 "did not grant the scope this tool needs"             | You switched to `readwrite` or changed `WRITE_TOOLSETS`. Click **Reconnect Google** on `/setup`.                                                                           |
-| 403 "does not have sufficient permission"                 | The Google account or service account lacks access to that property in Search Console or GA4.                                                                              |
-| Claude/ChatGPT can't connect or loops on login            | Check that `PUBLIC_URL` exactly matches the domain the app uses (no trailing path), and that `https://<domain>/.well-known/oauth-authorization-server` loads in a browser. |
-| "Too many attempts" on the approval page                  | Brute-force lockout. Wait 15 minutes. The logs show `[security]` lines with the source IPs.                                                                                |
-| Every redeploy asks to connect Google again               | The `/data` persistent volume is missing (step 3.1), or `ENCRYPTION_KEY` changed.                                                                                          |
-| Write tools don't appear in the app                       | `ACCESS_MODE` is `readonly`, or that connection was approved without **Make changes**. Reconnect it and tick the box.                                                      |
+| Symptom                                                        | Fix                                                                                                                                                                        |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Merchant tools say "not registered"                            | Run `merchant_register_gcp_project` once per Merchant Center account (section 5.1).                                                                                        |
+| YouTube shows the wrong channel, or "No YouTube channel found" | Click **Reconnect Google** on `/setup` and choose the channel (or Brand Account) at Google's prompt.                                                                       |
+| Container exits with `Configuration error: …`                  | Fix the named variable. Common causes: `PUBLIC_URL` not https, `ADMIN_PASSWORD` under 16 characters, missing `GOOGLE_OWNER_EMAIL`.                                         |
+| Google says `redirect_uri_mismatch`                            | The OAuth client's redirect URI must be exactly `https://<your domain>/oauth/google/callback`.                                                                             |
+| "Signed in as …, but GOOGLE_OWNER_EMAIL is …"                  | You picked a different Google account. Choose the owner account, or fix the variable.                                                                                      |
+| "Google did not return a refresh token"                        | Remove the app at <https://myaccount.google.com/permissions> and click Connect Google again.                                                                               |
+| Works for a week, then "refresh token revoked or expired"      | The OAuth consent screen is still in _Testing_. Publish it (step 2.2a) and reconnect.                                                                                      |
+| "A required Google API is disabled"                            | Enable the API named in the message (step 2.1), wait a minute, retry.                                                                                                      |
+| 403 "did not grant the scope this tool needs"                  | You switched to `readwrite` or changed `WRITE_TOOLSETS`. Click **Reconnect Google** on `/setup`.                                                                           |
+| 403 "does not have sufficient permission"                      | The Google account or service account lacks access to that property in Search Console or GA4.                                                                              |
+| Claude/ChatGPT can't connect or loops on login                 | Check that `PUBLIC_URL` exactly matches the domain the app uses (no trailing path), and that `https://<domain>/.well-known/oauth-authorization-server` loads in a browser. |
+| "Too many attempts" on the approval page                       | Brute-force lockout. Wait 15 minutes. The logs show `[security]` lines with the source IPs.                                                                                |
+| Every redeploy asks to connect Google again                    | The `/data` persistent volume is missing (step 3.1), or `ENCRYPTION_KEY` changed.                                                                                          |
+| Write tools don't appear in the app                            | `ACCESS_MODE` is `readonly`, or that connection was approved without **Make changes**. Reconnect it and tick the box.                                                      |

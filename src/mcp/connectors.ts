@@ -58,6 +58,33 @@ export const CONNECTORS: ConnectorDef[] = [
       'Edits happen in a workspace, gtm_create_version snapshots it, and gtm_publish_version makes it live on the website.',
     ],
   },
+  {
+    id: 'youtube',
+    path: '/mcp/youtube',
+    serverName: 'youtube-analytics-mcp',
+    title: 'YouTube Analytics',
+    services: ['youtube'],
+    includeCompat: false,
+    instructions: [
+      'YouTube channel and video analytics for the owner of this server.',
+      'Start with yt_list_channels to get channel IDs, and yt_list_videos for video IDs.',
+      'yt_report runs any YouTube Analytics query; the focused tools (top videos, traffic sources, audience, retention, revenue) cover common questions.',
+      'Dates accept YYYY-MM-DD or "28daysAgo"/"yesterday"; YouTube Analytics data is usually 2-3 days behind.',
+    ],
+  },
+  {
+    id: 'merchant',
+    path: '/mcp/merchant',
+    serverName: 'google-merchant-center-mcp',
+    title: 'Google Merchant Center',
+    services: ['merchant'],
+    includeCompat: false,
+    instructions: [
+      'Google Merchant Center (shopping feeds) for the owner of this server.',
+      'Start with merchant_list_accounts. merchant_account_issues and merchant_product_issues explain disapprovals; merchant_performance_report shows clicks and impressions from free and paid listings.',
+      'If calls fail with "not registered", the Google Cloud project must be registered once per account (merchant_register_gcp_project).',
+    ],
+  },
 ];
 
 export function connectorInstructions(

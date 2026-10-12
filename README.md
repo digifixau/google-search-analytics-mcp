@@ -1,15 +1,17 @@
-# Google Search Console, GA4 & Tag Manager MCP server
+# Google Marketing MCP server (Search Console, GA4, Tag Manager, YouTube, Merchant Center)
 
-A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4** and **Google Tag Manager**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
+A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotocol.io) server that gives **Claude** (claude.ai, Claude Desktop, Claude Code) and **ChatGPT** access to your **Google Search Console**, **Google Analytics 4**, **Google Tag Manager**, **YouTube Analytics** and **Google Merchant Center**. It runs **read-only** by default. You can enable **read-write** for the connections you choose.
 
 - **One app, several MCPs.** Each product family is its own MCP endpoint, so every connector keeps a short, focused tool list:
 
-  | MCP                               | URL        | Tools                                                                                                                                                 |
-  | --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Google Search Console & Analytics | `/mcp`     | 46: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports, GA4 admin, audiences, data streams, Indexing API |
-  | Google Tag Manager                | `/mcp/gtm` | 22: container audit, tags/triggers/variables, workspaces, versions, publishing                                                                        |
+  | MCP                               | URL             | Tools                                                                                                                                                 |
+  | --------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Google Search Console & Analytics | `/mcp`          | 46: search performance, period comparisons, quick-win finder, URL inspection, sitemaps, GA4 reports, GA4 admin, audiences, data streams, Indexing API |
+  | Google Tag Manager                | `/mcp/gtm`      | 22: container audit, tags/triggers/variables, workspaces, versions, publishing                                                                        |
+  | YouTube Analytics                 | `/mcp/youtube`  | 10: channel & video analytics, top videos, traffic sources, audience, retention, revenue, video metadata edits                                        |
+  | Google Merchant Center            | `/mcp/merchant` | 14: account health, product issues & disapprovals, products, Shopping performance, price competitiveness, promotions, product edits                   |
 
-  All MCPs share one deployment, one Google sign-in, one approval page and one audit log. More can be added later (e.g. YouTube Analytics at `/mcp/youtube`); see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
+  All MCPs share one deployment, one Google sign-in, one approval page and one audit log. More can be added later; see [Adding a new MCP](#adding-a-new-mcp-eg-youtube-analytics). Turn whole products off with `ENABLED_SERVICES`.
 
 - **Remote or local**: a Streamable HTTP endpoint with its own OAuth 2.1 server (works as a custom connector in claude.ai and ChatGPT), or stdio for Claude Desktop and Claude Code.
 - **Your credentials stay on your server**: sign in to Google once (OAuth) or use a service account. Refresh tokens are encrypted at rest with AES-256-GCM.
@@ -23,12 +25,12 @@ A self-hosted, single-tenant [Model Context Protocol](https://modelcontextprotoc
 
 Each layer can only narrow access. It can never widen it.
 
-| Layer             | Setting                                                                                    | Effect                                                                                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1. Server mode    | `ACCESS_MODE=readonly` (default) or `readwrite`                                            | In `readonly` mode, write tools are never registered and Google is only asked for read-only scopes (`webmasters.readonly`, `analytics.readonly`).                        |
-| 2. Write families | `WRITE_TOOLSETS=gsc,indexing,ga4_admin,ga4_audiences_streams,gtm,gtm_publish`              | Turns individual write families on or off. Google scopes are requested to match.                                                                                         |
-| 3. Per connection | Consent screen checkbox "Make changes (write)" / API key scope                             | When a client connects, you approve it with your admin password and choose read or read+write. For example, ChatGPT can be read-only while Claude Desktop is read+write. |
-| 4. Allowlists     | `ALLOWED_GSC_SITES`, `ALLOWED_GA4_PROPERTIES`, `ALLOWED_GTM_CONTAINERS`, `WRITE_ALLOWED_*` | Restricts which properties are visible at all, and which can be changed.                                                                                                 |
+| Layer             | Setting                                                                                        | Effect                                                                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Server mode    | `ACCESS_MODE=readonly` (default) or `readwrite`                                                | In `readonly` mode, write tools are never registered and Google is only asked for read-only scopes (`webmasters.readonly`, `analytics.readonly`).                        |
+| 2. Write families | `WRITE_TOOLSETS=gsc,indexing,ga4_admin,ga4_audiences_streams,gtm,gtm_publish,youtube,merchant` | Turns individual write families on or off. Google scopes are requested to match.                                                                                         |
+| 3. Per connection | Consent screen checkbox "Make changes (write)" / API key scope                                 | When a client connects, you approve it with your admin password and choose read or read+write. For example, ChatGPT can be read-only while Claude Desktop is read+write. |
+| 4. Allowlists     | `ALLOWED_GSC_SITES`, `ALLOWED_GA4_PROPERTIES`, `ALLOWED_GTM_CONTAINERS`, `WRITE_ALLOWED_*`     | Restricts which properties are visible at all, and which can be changed.                                                                                                 |
 
 Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint` where it applies, so Claude and ChatGPT ask you to confirm before running them. Their descriptions start with `[WRITE]`. Every write attempt, successful or not, is written to the `audit_log` table and to the container logs. The 20 most recent appear on `/setup`.
 
@@ -56,6 +58,16 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 
 **Tag Manager publish (write, `gtm_publish`):** `gtm_publish_version` puts a version **live on your website**. As a safety check it requires the container ID (`GTM-XXXX`) to be typed back, and it reports the previously live version so you can roll back by publishing that one again.
 
+**YouTube (read):** `yt_list_channels`, `yt_list_videos`, `yt_get_video`, `yt_report` (any YouTube Analytics query), `yt_top_videos`, `yt_traffic_sources`, `yt_audience` (age, gender, countries, devices), `yt_video_retention`, `yt_revenue` (monetized channels)
+
+**YouTube (write, `youtube`):** `yt_update_video_metadata` changes title, description, tags, category or language. Only the fields you pass change. There is no tool to delete videos or change privacy.
+
+**Merchant Center (read):** `merchant_list_accounts`, `merchant_account_issues` (account problems plus approved/pending/disapproved counts per destination), `merchant_list_data_sources`, `merchant_list_products`, `merchant_get_product`, `merchant_product_issues` (every disapproval grouped by cause, with examples and fixes), `merchant_performance_report` (Shopping clicks, impressions, CTR, conversions), `merchant_price_competitiveness`, `merchant_report_query` (raw MCQL, e.g. best sellers), `merchant_list_promotions`
+
+**Merchant Center (write, `merchant`):** `merchant_upsert_product`, `merchant_update_product` (only the attributes you pass), `merchant_delete_product`, and `merchant_register_gcp_project` (one-time setup, see below)
+
+> **Google permission notes.** YouTube edits need Google's broad `youtube` scope (it would also allow deleting videos; this server has no such tool). It is only requested in read-write mode with the `youtube` toolset on; otherwise `youtube.readonly` is used. The Merchant API has a **single read+write scope** (`content`), so Google shows write access even when this server is read-only; the server still hides write tools unless read-write is enabled and the connection was approved with **Make changes**.
+
 > The Indexing API is officially supported only for pages with `JobPosting` or `BroadcastEvent` structured data. The default quota is 200 publishes per day.
 
 ---
@@ -63,7 +75,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ## 1. Google Cloud setup (one time)
 
 1. Create or choose a project at <https://console.cloud.google.com>.
-2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_, _Tag Manager API_ and, if you will use it, _Web Search Indexing API_.
+2. **Enable these APIs:** _Google Search Console API_, _Google Analytics Data API_, _Google Analytics Admin API_, _Tag Manager API_, _YouTube Analytics API_, _YouTube Data API v3_, _Merchant API_ and, if you will use it, _Web Search Indexing API_. (Skip the ones for products you turn off with `ENABLED_SERVICES`.)
 3. Pick an auth mode:
 
 ### Option A: OAuth as yourself (recommended)
@@ -79,7 +91,7 @@ Write tools are annotated with `readOnlyHint: false`, and with `destructiveHint`
 ### Option B: Service account
 
 1. Create a service account and a JSON key.
-2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), and **each** GTM container (Read, Edit, or Publish for publishing).
+2. Add the service account email as a user in **each** Search Console property (Owner if you want sitemap, site or Indexing API changes) **each** GA4 property (Viewer for read, Editor for write), **each** GTM container (Read, Edit, or Publish for publishing), and **each** Merchant Center account (Standard access, or Admin for registration). YouTube does **not** support service accounts, so use OAuth mode for YouTube, or turn it off with `ENABLED_SERVICES`.
 3. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON, a file path, or base64).
 
 ---
@@ -116,6 +128,8 @@ Add **each MCP as its own connector** in your AI app; connect only the ones you 
 
 - Search Console & Analytics: **`https://mcp.example.com/mcp`**
 - Tag Manager: **`https://mcp.example.com/mcp/gtm`**
+- YouTube Analytics: **`https://mcp.example.com/mcp/youtube`**
+- Merchant Center: **`https://mcp.example.com/mcp/merchant`**
 
 Each connector is approved separately, so you can, for example, give the GTM connector write access while keeping Search Console & Analytics read-only. A connection approved for one MCP can't be used on another. `/setup` lists every MCP URL with its tool count.
 
@@ -133,6 +147,8 @@ Enable **Developer mode** (Settings → Apps & Connectors → Advanced settings)
 # OAuth (opens the consent page in your browser)
 claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp
 claude mcp add --transport http google-tag-manager https://mcp.example.com/mcp/gtm
+claude mcp add --transport http youtube-analytics https://mcp.example.com/mcp/youtube
+claude mcp add --transport http google-merchant-center https://mcp.example.com/mcp/merchant
 
 # or a static API key from MCP_API_KEYS (e.g. MCP_API_KEYS=claude-code=<token>:read+write); API keys work on every MCP
 claude mcp add --transport http google-search-analytics https://mcp.example.com/mcp \
@@ -179,28 +195,30 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 
 ## Configuration reference
 
-| Variable                                                   | Default                      | Description                                                                                           |
-| ---------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `TRANSPORT`                                                | `stdio` (`http` in Docker)   | `http` or `stdio`                                                                                     |
-| `PUBLIC_URL`                                               | –                            | Required for `http`. Must be https, except for localhost.                                             |
-| `PORT` / `HOST`                                            | `3000` / `0.0.0.0`           | Listen address                                                                                        |
-| `DATA_DIR`                                                 | `./data` (`/data` in Docker) | SQLite database location                                                                              |
-| `ACCESS_MODE`                                              | `readonly`                   | `readonly` or `readwrite`                                                                             |
-| `WRITE_TOOLSETS`                                           | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`           |
-| `ENABLED_SERVICES`                                         | all                          | Which products to expose: `gsc`, `ga4`, `gtm`. Fewer services = fewer tools for the AI to choose from |
-| `ADMIN_PASSWORD`                                           | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                   |
-| `ENCRYPTION_KEY`                                           | –                            | Required in oauth mode, at least 32 chars                                                             |
-| `MCP_API_KEYS`                                             | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                        |
-| `ACCESS_TOKEN_TTL_SECONDS`                                 | `3600`                       | OAuth access token lifetime                                                                           |
-| `REFRESH_TOKEN_TTL_DAYS`                                   | `30`                         | Rotating refresh token lifetime                                                                       |
-| `GOOGLE_AUTH_MODE`                                         | `oauth`                      | `oauth` or `service_account`                                                                          |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                | –                            | OAuth client (oauth mode)                                                                             |
-| `GOOGLE_OWNER_EMAIL`                                       | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected                     |
-| `GOOGLE_SERVICE_ACCOUNT_JSON`                              | –                            | Key JSON, path, or base64 (service account mode)                                                      |
-| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`             | all                          | Read allowlists                                                                                       |
-| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES` | read lists                   | Write allowlists                                                                                      |
-| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`  | all / read list              | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                    |
-| `TRUST_PROXY`                                              | `true`                       | Trust one reverse-proxy hop for client IPs (rate limiting)                                            |
+| Variable                                                        | Default                      | Description                                                                                                                      |
+| --------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `TRANSPORT`                                                     | `stdio` (`http` in Docker)   | `http` or `stdio`                                                                                                                |
+| `PUBLIC_URL`                                                    | –                            | Required for `http`. Must be https, except for localhost.                                                                        |
+| `PORT` / `HOST`                                                 | `3000` / `0.0.0.0`           | Listen address                                                                                                                   |
+| `DATA_DIR`                                                      | `./data` (`/data` in Docker) | SQLite database location                                                                                                         |
+| `ACCESS_MODE`                                                   | `readonly`                   | `readonly` or `readwrite`                                                                                                        |
+| `WRITE_TOOLSETS`                                                | all                          | Comma list of `gsc`, `indexing`, `ga4_admin`, `ga4_audiences_streams`, `gtm`, `gtm_publish`, `youtube`, `merchant`               |
+| `ENABLED_SERVICES`                                              | all                          | Which products to expose: `gsc`, `ga4`, `gtm`, `youtube`, `merchant`. Disabled products get no MCP endpoint and no Google scopes |
+| `ADMIN_PASSWORD`                                                | –                            | Required for `http`, at least 16 chars. Approves connections and protects `/setup`.                                              |
+| `ENCRYPTION_KEY`                                                | –                            | Required in oauth mode, at least 32 chars                                                                                        |
+| `MCP_API_KEYS`                                                  | –                            | `label=token:read[+write]`, comma separated. Tokens must be at least 24 chars.                                                   |
+| `ACCESS_TOKEN_TTL_SECONDS`                                      | `3600`                       | OAuth access token lifetime                                                                                                      |
+| `REFRESH_TOKEN_TTL_DAYS`                                        | `30`                         | Rotating refresh token lifetime                                                                                                  |
+| `GOOGLE_AUTH_MODE`                                              | `oauth`                      | `oauth` or `service_account`                                                                                                     |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                     | –                            | OAuth client (oauth mode)                                                                                                        |
+| `GOOGLE_OWNER_EMAIL`                                            | –                            | Required for `http` + oauth. Only this (verified) Google account may be connected                                                |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`                                   | –                            | Key JSON, path, or base64 (service account mode)                                                                                 |
+| `ALLOWED_GSC_SITES` / `ALLOWED_GA4_PROPERTIES`                  | all                          | Read allowlists                                                                                                                  |
+| `WRITE_ALLOWED_GSC_SITES` / `WRITE_ALLOWED_GA4_PROPERTIES`      | read lists                   | Write allowlists                                                                                                                 |
+| `ALLOWED_GTM_CONTAINERS` / `WRITE_ALLOWED_GTM_CONTAINERS`       | all / read list              | GTM containers by public ID (`GTM-ABC123`) or numeric container ID                                                               |
+| `ALLOWED_YOUTUBE_CHANNELS` / `WRITE_ALLOWED_YOUTUBE_CHANNELS`   | all / read list              | YouTube channel IDs (`UC…`)                                                                                                      |
+| `ALLOWED_MERCHANT_ACCOUNTS` / `WRITE_ALLOWED_MERCHANT_ACCOUNTS` | all / read list              | Merchant Center account IDs                                                                                                      |
+| `TRUST_PROXY`                                                   | `true`                       | Trust one reverse-proxy hop for client IPs (rate limiting)                                                                       |
 
 ## Security notes
 
@@ -208,7 +226,7 @@ In stdio mode each process serves one MCP (`--connector search-analytics` by def
 
 | Someone with the link tries to…                   | What happens                                                                                                         |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Call `/mcp` or `/mcp/gtm` directly                | `401`: every request needs a token issued by this server (or a configured API key).                                  |
+| Call any `/mcp…` endpoint directly                | `401`: every request needs a token issued by this server (or a configured API key).                                  |
 | Add it as a connector in their own Claude/ChatGPT | They reach the consent page, but approving needs `ADMIN_PASSWORD`. Without it no token is issued.                    |
 | Open `/setup`                                     | Password prompt; nothing is shown before sign-in.                                                                    |
 | Connect their own Google account                  | Impossible: Google can only be linked from `/setup`, and only the verified `GOOGLE_OWNER_EMAIL` account is accepted. |

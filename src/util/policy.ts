@@ -1,4 +1,4 @@
-import { normalizePropertyId, type Config } from '../config.js';
+import { normalizeMerchantAccount, normalizePropertyId, type Config } from '../config.js';
 import { AccessDeniedError } from './errors.js';
 
 /** Normalises a Search Console property for comparison (`sc-domain:` and URL-prefix properties). */
@@ -112,6 +112,48 @@ export class AccessPolicy {
     const { gtmContainers, writeGtmContainers } = this.config.allowlists;
     if (!matches(gtmContainers)) return false;
     return mode === 'read' || matches(writeGtmContainers);
+  }
+
+  private listCheck(read: string[], write: string[], id: string, mode: 'read' | 'write'): boolean {
+    if (read.length > 0 && !read.includes(id)) return false;
+    return mode === 'read' || write.length === 0 || write.includes(id);
+  }
+
+  /** YouTube channel allowlist (channel IDs, e.g. UCxxxx). */
+  channelAllowed(channelId: string, mode: 'read' | 'write' = 'read'): boolean {
+    const { youtubeChannels, writeYoutubeChannels } = this.config.allowlists;
+    return this.listCheck(youtubeChannels, writeYoutubeChannels, channelId, mode);
+  }
+
+  assertChannel(channelId: string, mode: 'read' | 'write' = 'read'): string {
+    if (!this.channelAllowed(channelId, mode)) {
+      throw new AccessDeniedError(
+        `YouTube channel ${channelId} is not in the ${mode === 'write' ? 'write ' : ''}allowlist.`,
+      );
+    }
+    return channelId;
+  }
+
+  /** Merchant Center account allowlist; returns the numeric account ID. */
+  merchantAccountAllowed(account: string, mode: 'read' | 'write' = 'read'): boolean {
+    const id = normalizeMerchantAccount(account);
+    const { merchantAccounts, writeMerchantAccounts } = this.config.allowlists;
+    return this.listCheck(merchantAccounts, writeMerchantAccounts, id, mode);
+  }
+
+  assertMerchantAccount(account: string, mode: 'read' | 'write' = 'read'): string {
+    const id = normalizeMerchantAccount(account);
+    if (!/^\d+$/.test(id)) {
+      throw new AccessDeniedError(
+        `"${account}" is not a Merchant Center account ID (digits, or accounts/{id}).`,
+      );
+    }
+    if (!this.merchantAccountAllowed(id, mode)) {
+      throw new AccessDeniedError(
+        `Merchant Center account ${id} is not in the ${mode === 'write' ? 'write ' : ''}allowlist.`,
+      );
+    }
+    return id;
   }
 
   get hasContainerAllowlist(): boolean {

@@ -15,8 +15,10 @@ describe('config', () => {
       'ga4_audiences_streams',
       'gtm',
       'gtm_publish',
+      'youtube',
+      'merchant',
     ]);
-    expect(c.enabledServices).toEqual(['gsc', 'ga4', 'gtm']);
+    expect(c.enabledServices).toEqual(['gsc', 'ga4', 'gtm', 'youtube', 'merchant']);
   });
 
   it('requires PUBLIC_URL (https) and ADMIN_PASSWORD for http', () => {
@@ -75,16 +77,37 @@ describe('config', () => {
       GOOGLE_SCOPES.gscRead,
       GOOGLE_SCOPES.gaRead,
       GOOGLE_SCOPES.gtmRead,
+      GOOGLE_SCOPES.ytAnalytics,
+      GOOGLE_SCOPES.ytMonetary,
+      GOOGLE_SCOPES.ytRead,
+      // The Merchant API has no read-only scope.
+      GOOGLE_SCOPES.merchant,
     ]);
     const rw = requiredGoogleScopes(
-      testConfig({ ACCESS_MODE: 'readwrite', WRITE_TOOLSETS: 'ga4_admin' }),
+      testConfig({
+        ACCESS_MODE: 'readwrite',
+        WRITE_TOOLSETS: 'ga4_admin',
+        ENABLED_SERVICES: 'gsc,ga4',
+      }),
+    );
+    expect(rw).toEqual([GOOGLE_SCOPES.gscRead, GOOGLE_SCOPES.gaRead, GOOGLE_SCOPES.gaEdit]);
+  });
+
+  it('swaps youtube.readonly for the manage scope only when YouTube edits are on', () => {
+    const rw = requiredGoogleScopes(
+      testConfig({ ACCESS_MODE: 'readwrite', ENABLED_SERVICES: 'youtube' }),
     );
     expect(rw).toEqual([
-      GOOGLE_SCOPES.gscRead,
-      GOOGLE_SCOPES.gaRead,
-      GOOGLE_SCOPES.gaEdit,
-      GOOGLE_SCOPES.gtmRead,
+      GOOGLE_SCOPES.ytAnalytics,
+      GOOGLE_SCOPES.ytMonetary,
+      GOOGLE_SCOPES.ytManage,
     ]);
+    expect(missingScopes([GOOGLE_SCOPES.ytRead], [GOOGLE_SCOPES.ytManage])).toEqual([]);
+    const noEdits = requiredGoogleScopes(
+      testConfig({ ACCESS_MODE: 'readwrite', ENABLED_SERVICES: 'youtube', WRITE_TOOLSETS: 'gsc' }),
+    );
+    expect(noEdits).toContain(GOOGLE_SCOPES.ytRead);
+    expect(noEdits).not.toContain(GOOGLE_SCOPES.ytManage);
   });
 
   it('requests GTM edit and publish scopes only when those toolsets are on', () => {

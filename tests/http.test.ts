@@ -151,7 +151,12 @@ describe('HTTP endpoints', () => {
     );
 
     const root = (await (await fetch(`${base}/`)).json()) as { mcp: Record<string, string> };
-    expect(root.mcp).toEqual({ 'search-analytics': `${base}/mcp`, gtm: `${base}/mcp/gtm` });
+    expect(root.mcp).toEqual({
+      'search-analytics': `${base}/mcp`,
+      gtm: `${base}/mcp/gtm`,
+      youtube: `${base}/mcp/youtube`,
+      merchant: `${base}/mcp/merchant`,
+    });
   });
 
   it('removes the GTM endpoint when its service is disabled', async () => {

@@ -14,6 +14,12 @@ export const GOOGLE_SCOPES = {
   gtmEdit: 'https://www.googleapis.com/auth/tagmanager.edit.containers',
   gtmVersions: 'https://www.googleapis.com/auth/tagmanager.edit.containerversions',
   gtmPublish: 'https://www.googleapis.com/auth/tagmanager.publish',
+  ytAnalytics: 'https://www.googleapis.com/auth/yt-analytics.readonly',
+  ytMonetary: 'https://www.googleapis.com/auth/yt-analytics-monetary.readonly',
+  ytRead: 'https://www.googleapis.com/auth/youtube.readonly',
+  ytManage: 'https://www.googleapis.com/auth/youtube',
+  /** The Merchant API has a single read+write scope. */
+  merchant: 'https://www.googleapis.com/auth/content',
 } as const;
 
 const IDENTITY_SCOPES = ['openid', 'email'];
@@ -41,6 +47,14 @@ export function requiredGoogleScopes(config: Config): string[] {
     if (toolsets.has('gtm')) scopes.push(GOOGLE_SCOPES.gtmEdit, GOOGLE_SCOPES.gtmVersions);
     if (toolsets.has('gtm_publish')) scopes.push(GOOGLE_SCOPES.gtmPublish);
   }
+  if (services.has('youtube')) {
+    scopes.push(
+      GOOGLE_SCOPES.ytAnalytics,
+      GOOGLE_SCOPES.ytMonetary,
+      toolsets.has('youtube') ? GOOGLE_SCOPES.ytManage : GOOGLE_SCOPES.ytRead,
+    );
+  }
+  if (services.has('merchant')) scopes.push(GOOGLE_SCOPES.merchant);
   return scopes;
 }
 
@@ -48,6 +62,7 @@ export function requiredGoogleScopes(config: Config): string[] {
 export function missingScopes(required: string[], granted: string[]): string[] {
   const have = new Set(granted);
   if (have.has(GOOGLE_SCOPES.gscWrite)) have.add(GOOGLE_SCOPES.gscRead);
+  if (have.has(GOOGLE_SCOPES.ytManage)) have.add(GOOGLE_SCOPES.ytRead);
   return required.filter((scope) => !have.has(scope));
 }
 

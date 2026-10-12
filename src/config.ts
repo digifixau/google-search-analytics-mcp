@@ -7,10 +7,12 @@ export const WRITE_TOOLSETS = [
   'ga4_audiences_streams',
   'gtm',
   'gtm_publish',
+  'youtube',
+  'merchant',
 ] as const;
 export type WriteToolset = (typeof WRITE_TOOLSETS)[number];
 
-export const SERVICES = ['gsc', 'ga4', 'gtm'] as const;
+export const SERVICES = ['gsc', 'ga4', 'gtm', 'youtube', 'merchant'] as const;
 export type Service = (typeof SERVICES)[number];
 
 const csv = z
@@ -67,6 +69,10 @@ const envSchema = z.object({
   WRITE_ALLOWED_GA4_PROPERTIES: csv,
   ALLOWED_GTM_CONTAINERS: csv,
   WRITE_ALLOWED_GTM_CONTAINERS: csv,
+  ALLOWED_YOUTUBE_CHANNELS: csv,
+  WRITE_ALLOWED_YOUTUBE_CHANNELS: csv,
+  ALLOWED_MERCHANT_ACCOUNTS: csv,
+  WRITE_ALLOWED_MERCHANT_ACCOUNTS: csv,
 
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
@@ -108,6 +114,10 @@ export interface Config {
     writeGa4Properties: string[];
     gtmContainers: string[];
     writeGtmContainers: string[];
+    youtubeChannels: string[];
+    writeYoutubeChannels: string[];
+    merchantAccounts: string[];
+    writeMerchantAccounts: string[];
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -217,6 +227,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       writeGa4Properties: e.WRITE_ALLOWED_GA4_PROPERTIES.map(normalizePropertyId),
       gtmContainers: e.ALLOWED_GTM_CONTAINERS.map(normalizeContainerRef),
       writeGtmContainers: e.WRITE_ALLOWED_GTM_CONTAINERS.map(normalizeContainerRef),
+      youtubeChannels: e.ALLOWED_YOUTUBE_CHANNELS,
+      writeYoutubeChannels: e.WRITE_ALLOWED_YOUTUBE_CHANNELS,
+      merchantAccounts: e.ALLOWED_MERCHANT_ACCOUNTS.map(normalizeMerchantAccount),
+      writeMerchantAccounts: e.WRITE_ALLOWED_MERCHANT_ACCOUNTS.map(normalizeMerchantAccount),
     },
     logLevel: e.LOG_LEVEL,
   };
@@ -274,6 +288,14 @@ function validateConfig(config: Config): void {
 export function normalizeContainerRef(value: string): string {
   const v = value.trim();
   return /^gtm-/i.test(v) ? v.toUpperCase() : v.replace(/^.*containers\//, '');
+}
+
+/** Accepts `123456` or `accounts/123456` and returns `123456`. */
+export function normalizeMerchantAccount(value: string): string {
+  return value
+    .trim()
+    .replace(/^accounts\//, '')
+    .split('/')[0]!;
 }
 
 /** Accepts `123456`, `properties/123456` and returns `123456`. */

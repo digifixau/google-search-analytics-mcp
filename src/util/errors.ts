@@ -33,6 +33,13 @@ export function describeError(error: unknown): string {
     e?.message ??
     String(error);
 
+  if (
+    /(GCP|Cloud) project.*not registered|not registered.*(GCP|Cloud) project|developer registration/i.test(
+      googleMessage,
+    )
+  ) {
+    return 'This Google Cloud project is not registered with the Merchant Center account yet. Run merchant_register_gcp_project once for this account (read-write connection), then retry.';
+  }
   if (googleMessage.includes('invalid_grant')) {
     return 'Google rejected the stored refresh token (revoked or expired). Reconnect Google via /setup (or run `google-auth`).';
   }
@@ -48,9 +55,15 @@ export function describeError(error: unknown): string {
       if (/has not been used|is disabled|SERVICE_DISABLED/i.test(googleMessage)) {
         return `A required Google API is disabled in your Google Cloud project: ${googleMessage}`;
       }
+      if (
+        /forbidden|insufficientPermissions/i.test(googleMessage) &&
+        /channel|video|youtube/i.test(googleMessage)
+      ) {
+        return `YouTube denied access (403): ${googleMessage}. The connected Google account must own or manage this channel; to switch to a Brand Account channel, reconnect Google on /setup and pick it.`;
+      }
       return `Google denied access (403): ${googleMessage}. Check that the connected account or service account has permission on this property.`;
     case 404:
-      return `Not found (404): ${googleMessage}. Check the site URL / property ID (use gsc_list_sites or ga4_list_properties).`;
+      return `Not found (404): ${googleMessage}. Check the ID or name (the matching list tool shows valid values).`;
     case 429:
       return `Google API quota exceeded (429): ${googleMessage}. Wait and retry, or narrow the request.`;
     default:

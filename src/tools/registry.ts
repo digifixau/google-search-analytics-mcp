@@ -12,6 +12,8 @@ export function serviceOf(toolset: Toolset): Service | undefined {
   if (toolset === 'ga4' || toolset === 'ga4_admin' || toolset === 'ga4_audiences_streams')
     return 'ga4';
   if (toolset === 'gtm' || toolset === 'gtm_publish') return 'gtm';
+  if (toolset === 'youtube') return 'youtube';
+  if (toolset === 'merchant') return 'merchant';
   return undefined;
 }
 
