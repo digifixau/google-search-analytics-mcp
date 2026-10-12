@@ -40,6 +40,14 @@ const MIGRATIONS = [
      outcome TEXT NOT NULL,
      detail TEXT
    );`,
+  // Pending OAuth consent requests, persisted so restarts / rolling deploys do not lose them.
+  `CREATE TABLE IF NOT EXISTS pending_authorizations (
+     id_hash TEXT PRIMARY KEY,
+     client_id TEXT NOT NULL,
+     params TEXT NOT NULL,
+     expires_at INTEGER NOT NULL,
+     completed_location TEXT
+   );`,
 ];
 
 export function openDb(dataDir: string, filename = 'app.db'): Db {

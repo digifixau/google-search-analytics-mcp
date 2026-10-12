@@ -25,6 +25,8 @@ import { consentPage, page } from './pages.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const PENDING_TTL_MS = 10 * 60 * 1000;
+/** After approve/deny, a resubmitted form (double click, refresh) is sent to the same place for this long. */
+const COMPLETED_REPLAY_MS = 5 * 60 * 1000;
 /** Registered clients that never obtain a token are forgotten after this long. */
 const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -32,6 +34,7 @@ interface PendingAuthorization {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
   expiresAt: number;
+  completedLocation?: string;
 }
 
 interface StoredCode {
@@ -43,7 +46,8 @@ interface StoredCode {
 }
 
 export type ConsentOutcome =
-  { kind: 'redirect'; location: string } | { kind: 'page'; status: number; html: string };
+  | { kind: 'redirect'; location: string; approved: boolean }
+  | { kind: 'page'; status: number; html: string };
 
 function isLoopback(hostname: string): boolean {
   return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(hostname);
@@ -79,7 +83,6 @@ class SqliteClientsStore implements OAuthRegisteredClientsStore {
  */
 export class OwnerOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: SqliteClientsStore;
-  private readonly pending = new Map<string, PendingAuthorization>();
   private readonly guard: LoginGuard;
 
   constructor(
@@ -120,7 +123,16 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
 
     this.sweep();
     const requestId = randomToken(24);
-    this.pending.set(requestId, { client, params, expiresAt: Date.now() + PENDING_TTL_MS });
+    this.db
+      .prepare(
+        'INSERT INTO pending_authorizations (id_hash, client_id, params, expires_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(
+        sha256(requestId),
+        client.client_id,
+        JSON.stringify({ ...params, resource: params.resource?.href }),
+        Date.now() + PENDING_TTL_MS,
+      );
     res
       .status(200)
       .set({
@@ -133,8 +145,38 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
       .send(this.renderConsent(requestId));
   }
 
+  private loadPending(requestId: string | undefined): PendingAuthorization | undefined {
+    if (!requestId) return undefined;
+    const row = this.db
+      .prepare(
+        'SELECT client_id, params, expires_at, completed_location FROM pending_authorizations WHERE id_hash = ?',
+      )
+      .get(sha256(requestId)) as
+      | { client_id: string; params: string; expires_at: number; completed_location: string | null }
+      | undefined;
+    if (!row || row.expires_at < Date.now()) return undefined;
+    const client = this.clientsStore.getClient(row.client_id);
+    if (!client) return undefined;
+    const stored = JSON.parse(row.params) as AuthorizationParams & { resource?: string };
+    return {
+      client,
+      params: { ...stored, resource: stored.resource ? new URL(stored.resource) : undefined },
+      expiresAt: row.expires_at,
+      completedLocation: row.completed_location ?? undefined,
+    };
+  }
+
+  /** Marks a request as finished; resubmits within COMPLETED_REPLAY_MS go to the same location. */
+  private completePending(requestId: string, location: string): void {
+    this.db
+      .prepare(
+        'UPDATE pending_authorizations SET completed_location = ?, expires_at = ? WHERE id_hash = ?',
+      )
+      .run(location, Date.now() + COMPLETED_REPLAY_MS, sha256(requestId));
+  }
+
   private renderConsent(requestId: string, error?: string): string {
-    const p = this.pending.get(requestId)!;
+    const p = this.loadPending(requestId)!;
     return consentPage({
       requestId,
       clientName: p.client.client_name ?? 'An MCP client',
@@ -164,12 +206,19 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     form: { request_id?: string; password?: string; decision?: string; scope_write?: string },
     ip: string,
   ): ConsentOutcome {
-    const pending = form.request_id ? this.pending.get(form.request_id) : undefined;
-    if (!pending || pending.expiresAt < Date.now()) {
+    const pending = this.loadPending(form.request_id);
+    if (!pending) {
       return {
         kind: 'page',
         status: 400,
         html: consentExpired(),
+      };
+    }
+    if (pending.completedLocation) {
+      return {
+        kind: 'redirect',
+        location: pending.completedLocation,
+        approved: new URL(pending.completedLocation).searchParams.has('code'),
       };
     }
     const { client, params } = pending;
@@ -177,10 +226,10 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     if (params.state !== undefined) redirect.searchParams.set('state', params.state);
 
     if (form.decision !== 'approve') {
-      this.pending.delete(form.request_id!);
       redirect.searchParams.set('error', 'access_denied');
       redirect.searchParams.set('error_description', 'The owner denied the request');
-      return { kind: 'redirect', location: redirect.href };
+      this.completePending(form.request_id!, redirect.href);
+      return { kind: 'redirect', location: redirect.href, approved: false };
     }
     if (!this.checkRateLimit(ip)) {
       return {
@@ -198,7 +247,6 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
       };
     }
 
-    this.pending.delete(form.request_id!);
     const scopes: string[] = [MCP_SCOPES.read];
     if (this.writeAvailable() && form.scope_write === '1') scopes.push(MCP_SCOPES.write);
 
@@ -216,7 +264,8 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
       )
       .run(sha256(code), client.client_id, JSON.stringify(stored), Date.now() + CODE_TTL_MS);
     redirect.searchParams.set('code', code);
-    return { kind: 'redirect', location: redirect.href };
+    this.completePending(form.request_id!, redirect.href);
+    return { kind: 'redirect', location: redirect.href, approved: true };
   }
 
   private loadCode(client: OAuthClientInformationFull, code: string): StoredCode {
@@ -387,13 +436,13 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
         'DELETE FROM oauth_clients WHERE created_at < ? AND client_id NOT IN (SELECT DISTINCT client_id FROM tokens)',
       )
       .run(now - UNUSED_CLIENT_TTL_MS);
-    for (const [id, p] of this.pending) if (p.expiresAt < now) this.pending.delete(id);
+    this.db.prepare('DELETE FROM pending_authorizations WHERE expires_at < ?').run(now);
   }
 }
 
 function consentExpired(): string {
   return page(
     'Request expired',
-    '<div class="card"><h1>Request expired</h1><p>This authorization request expired. Start the connection again from your MCP client.</p></div>',
+    '<div class="card"><h1>Request expired</h1><p>This approval link is older than 10 minutes or was already used. Close this tab and start the connection again from ChatGPT, Claude or your MCP client.</p></div>',
   );
 }

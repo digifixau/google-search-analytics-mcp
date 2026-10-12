@@ -80,6 +80,21 @@ export function loginPage(error?: string): string {
   );
 }
 
+/**
+ * Sent after the consent form is submitted. Navigating with a meta refresh (instead of a 302 from the
+ * form POST) keeps the consent page's `form-action 'self'` CSP from blocking the hop to the client.
+ */
+export function redirectPage(location: string, approved: boolean): string {
+  const target = escapeHtml(location);
+  const host = escapeHtml(new URL(location).host);
+  return page(
+    approved ? 'Connection approved' : 'Connection denied',
+    `<div class="card"><h1>${approved ? 'Connection approved' : 'Connection denied'}</h1>
+      <p>Returning you to <code>${host}</code>…</p>
+      <p><a href="${target}">Continue</a> if nothing happens.</p></div>`,
+  ).replace('<head>', `<head><meta http-equiv="refresh" content="0;url=${target}">`);
+}
+
 export function messagePage(title: string, message: string, ok = false): string {
   return page(
     title,

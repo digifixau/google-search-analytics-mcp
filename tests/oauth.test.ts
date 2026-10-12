@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Response } from 'express';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { OwnerOAuthProvider } from '../src/auth/provider.js';
+import { redirectPage } from '../src/auth/pages.js';
 import { openDb, type Db } from '../src/store/db.js';
 import { testConfig } from './helpers.js';
 
@@ -224,5 +225,57 @@ describe('OwnerOAuthProvider', () => {
     await startAuth(provider, client); // authorize() runs the sweep
     expect(provider.clientsStore.getClient(unused.client_id)).toBeUndefined();
     expect(provider.clientsStore.getClient(client.client_id)).toBeDefined();
+  });
+
+  describe('consent submission (regression: "Request expired" in ChatGPT)', () => {
+    const approve = (provider: OwnerOAuthProvider, requestId: string) =>
+      provider.handleConsent(
+        { request_id: requestId, password: 'correct-horse-battery', decision: 'approve' },
+        'ip',
+      );
+
+    it('keeps pending requests across a restart (same database)', async () => {
+      const { provider, client, db } = setup();
+      const { requestId } = await startAuth(provider, client);
+      const restarted = new OwnerOAuthProvider(
+        testConfig({
+          TRANSPORT: 'http',
+          PUBLIC_URL: 'https://mcp.example.com',
+          ADMIN_PASSWORD: 'correct-horse-battery',
+          GOOGLE_OWNER_EMAIL: 'owner@example.com',
+        }),
+        db,
+      );
+      const out = approve(restarted, requestId);
+      expect(out).toMatchObject({ kind: 'redirect', approved: true });
+    });
+
+    it('sends a resubmitted approval to the same redirect instead of "expired"', async () => {
+      const { provider, client } = setup();
+      const { requestId } = await startAuth(provider, client);
+      const first = approve(provider, requestId);
+      const second = approve(provider, requestId);
+      expect(second).toEqual(first);
+      const code = new URL((first as { location: string }).location).searchParams.get('code')!;
+      await provider.exchangeAuthorizationCode(client, code);
+      // The code itself stays single-use.
+      await expect(provider.exchangeAuthorizationCode(client, code)).rejects.toThrow(/Invalid/);
+    });
+
+    it('still reports unknown request ids as expired', () => {
+      const { provider } = setup();
+      expect(approve(provider, 'not-a-real-request')).toMatchObject({ kind: 'page', status: 400 });
+    });
+
+    it('returns to the client with a meta refresh, not a 302 blocked by form-action', () => {
+      const html = redirectPage(
+        'https://chatgpt.com/connector_platform_oauth_redirect?code=a&state=b"<',
+        true,
+      );
+      expect(html).toContain(
+        '<meta http-equiv="refresh" content="0;url=https://chatgpt.com/connector_platform_oauth_redirect?code=a&amp;state=b&quot;&lt;">',
+      );
+      expect(html).toContain('Connection approved');
+    });
   });
 });

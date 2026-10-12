@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { AppContext } from '../app.js';
 import { MCP_SCOPES } from '../config.js';
 import { OwnerOAuthProvider } from '../auth/provider.js';
-import { dashboardPage, loginPage, messagePage } from '../auth/pages.js';
+import { dashboardPage, loginPage, messagePage, redirectPage } from '../auth/pages.js';
 import { buildMcpServer, SERVER_NAME, SERVER_VERSION } from '../mcp/server.js';
 import { randomToken } from '../store/crypto.js';
 
@@ -82,8 +82,11 @@ export function createHttpApp(app: AppContext): express.Express {
 
   server.post('/oauth/consent', form, (req, res) => {
     const outcome = provider.handleConsent(req.body ?? {}, req.ip ?? 'unknown');
-    if (outcome.kind === 'redirect') res.redirect(302, outcome.location);
-    else html(res, outcome.status, outcome.html);
+    if (outcome.kind === 'redirect') {
+      html(res, 200, redirectPage(outcome.location, outcome.approved));
+    } else {
+      html(res, outcome.status, outcome.html);
+    }
   });
 
   // ---- MCP endpoint (stateless Streamable HTTP) ----
