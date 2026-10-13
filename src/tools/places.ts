@@ -158,11 +158,77 @@ const COLUMNS: Record<Detail, string[]> = {
 
 const COST_NOTE = 'Each Places call is billed by Google; richer "detail" levels cost more.';
 
+/** `places.reviews` is requested only for a "full" search that asked for reviews. */
+const reviewField = (args: { detail: Detail; includeReviews: boolean }) =>
+  args.detail === 'full' && args.includeReviews ? ['places.reviews'] : [];
+
+/** Everything known about one place at the given detail level (shared by get_place and full searches). */
+export function placeDetail(p: Place, detail: Detail, maxPhotos = 10): Row {
+  return {
+    ...placeRow(p, detail),
+    priceLevel: priceLabel(p.priceLevel),
+    openingHours: p.regularOpeningHours?.weekdayDescriptions,
+    internationalPhone: p.internationalPhoneNumber,
+    summary: text(p.editorialSummary),
+    serviceOptions:
+      detail === 'full'
+        ? {
+            delivery: p.delivery,
+            dineIn: p.dineIn,
+            takeout: p.takeout,
+            curbsidePickup: p.curbsidePickup,
+            reservable: p.reservable,
+          }
+        : undefined,
+    accessibility: p.accessibilityOptions,
+    photos: p.photos?.slice(0, maxPhotos).map((ph) => ({
+      photoName: ph.name,
+      widthPx: ph.widthPx,
+      heightPx: ph.heightPx,
+    })),
+  };
+}
+
+/** The reviews Google returns for a place (at most 5), with the text cut to `maxChars`. */
+export function reviewRows(p: Place, maxChars: number): Row[] {
+  return (p.reviews ?? []).slice(0, 5).map((r) => ({
+    author: r.authorAttribution?.displayName,
+    rating: r.rating,
+    when: r.relativePublishTimeDescription,
+    review: (text(r.text) ?? '').slice(0, maxChars),
+  }));
+}
+
+const includeReviewsSchema = z
+  .boolean()
+  .default(false)
+  .describe(
+    'Only with detail "full": also return up to 5 reviews per place in this same call (no extra request is billed; the reviews field is in the same Google tier as "full"). Off by default because it makes the response long.',
+  );
+
+/** Search response for detail "full": one JSON entry per place, so no per-place follow-up call is needed. */
+function fullSearchResult(
+  title: string,
+  found: Place[],
+  includeReviews: boolean,
+  nextPageToken?: string | null,
+) {
+  return jsonResult(title, {
+    places: found.map((p) => ({
+      ...placeDetail(p, 'full', 3),
+      reviews: includeReviews ? reviewRows(p, 300) : undefined,
+    })),
+    nextPageToken: nextPageToken ?? undefined,
+    note: `${COST_NOTE} This one request already includes details and photo references; pass a photoName to places_get_photo only for the photos you need, since each photo is a separate billed call.`,
+  });
+}
+
 export const placesSearchText = defineTool({
   name: 'places_search_text',
   title: 'Search places by text',
   description:
     'Finds places with a free-text query such as "fridge repair Melbourne" or "pizza near Fitzroy". Optionally bias towards a point, filter by type, rating, price or open-now. Returns place IDs for places_get_place, places_get_reviews and places_get_photo. ' +
+    'The cheapest way to research several places is ONE search with detail "full" (add includeReviews for reviews): it returns details and photo references for every result in a single billed request, so no places_get_place call per place is needed. ' +
     COST_NOTE,
   access: 'read',
   toolset: 'places',
@@ -190,6 +256,7 @@ export const placesSearchText = defineTool({
       .optional()
       .describe('nextPageToken from the previous call, to get the next page.'),
     detail: detailSchema('standard'),
+    includeReviews: includeReviewsSchema,
     languageCode,
     regionCode,
   },
@@ -224,16 +291,22 @@ export const placesSearchText = defineTool({
                 },
         },
       },
-      headers(fieldMask(args.detail, 'places.', ['nextPageToken'])),
+      headers(fieldMask(args.detail, 'places.', ['nextPageToken', ...reviewField(args)])),
     );
+    const title = `Places for "${args.query}" (${res.data.places?.length ?? 0})`;
+    if (args.detail === 'full') {
+      return fullSearchResult(
+        title,
+        res.data.places ?? [],
+        args.includeReviews,
+        res.data.nextPageToken,
+      );
+    }
     const rows = (res.data.places ?? []).map((p) => placeRow(p, args.detail));
     const notes = [COST_NOTE];
     if (res.data.nextPageToken)
       notes.push(`More results: call again with pageToken "${res.data.nextPageToken}".`);
-    return tableResult(`Places for "${args.query}" (${rows.length})`, rows, {
-      columns: COLUMNS[args.detail],
-      notes,
-    });
+    return tableResult(title, rows, { columns: COLUMNS[args.detail], notes });
   },
 });
 
@@ -242,6 +315,7 @@ export const placesSearchNearby = defineTool({
   title: 'Search places nearby',
   description:
     'Finds places within a radius of a point, optionally limited to given place types (e.g. "restaurant", "electrician"), ranked by popularity or distance. Returns place IDs for places_get_place and others. ' +
+    'With detail "full" one search returns details and photo references for every result (add includeReviews for reviews), so no per-place follow-up call is needed. ' +
     COST_NOTE,
   access: 'read',
   toolset: 'places',
@@ -262,6 +336,7 @@ export const placesSearchNearby = defineTool({
     rankBy: z.enum(['popularity', 'distance']).default('popularity'),
     maxResults,
     detail: detailSchema('standard'),
+    includeReviews: includeReviewsSchema,
     languageCode,
     regionCode,
   },
@@ -284,14 +359,14 @@ export const placesSearchNearby = defineTool({
           regionCode: args.regionCode,
         },
       },
-      headers(fieldMask(args.detail, 'places.')),
+      headers(fieldMask(args.detail, 'places.', reviewField(args))),
     );
+    const title = `Places within ${args.radiusMeters} m of ${args.latitude},${args.longitude} (${res.data.places?.length ?? 0})`;
+    if (args.detail === 'full') {
+      return fullSearchResult(title, res.data.places ?? [], args.includeReviews);
+    }
     const rows = (res.data.places ?? []).map((p) => placeRow(p, args.detail));
-    return tableResult(
-      `Places within ${args.radiusMeters} m of ${args.latitude},${args.longitude} (${rows.length})`,
-      rows,
-      { columns: COLUMNS[args.detail], notes: [COST_NOTE] },
-    );
+    return tableResult(title, rows, { columns: COLUMNS[args.detail], notes: [COST_NOTE] });
   },
 });
 
@@ -320,29 +395,10 @@ export const placesGetPlace = defineTool({
       headers(fieldMask(args.detail, '')),
     );
     const p = res.data;
-    return jsonResult(`${text(p.displayName) ?? args.placeId} (${args.detail} detail)`, {
-      ...placeRow(p, args.detail),
-      priceLevel: priceLabel(p.priceLevel),
-      openingHours: p.regularOpeningHours?.weekdayDescriptions,
-      internationalPhone: p.internationalPhoneNumber,
-      summary: text(p.editorialSummary),
-      serviceOptions:
-        args.detail === 'full'
-          ? {
-              delivery: p.delivery,
-              dineIn: p.dineIn,
-              takeout: p.takeout,
-              curbsidePickup: p.curbsidePickup,
-              reservable: p.reservable,
-            }
-          : undefined,
-      accessibility: p.accessibilityOptions,
-      photos: p.photos?.slice(0, 10).map((ph) => ({
-        photoName: ph.name,
-        widthPx: ph.widthPx,
-        heightPx: ph.heightPx,
-      })),
-    });
+    return jsonResult(
+      `${text(p.displayName) ?? args.placeId} (${args.detail} detail)`,
+      placeDetail(p, args.detail),
+    );
   },
 });
 
@@ -364,12 +420,7 @@ export const placesGetReviews = defineTool({
       headers('id,displayName,rating,userRatingCount,reviews,googleMapsUri'),
     );
     const p = res.data;
-    const rows = (p.reviews ?? []).map((r) => ({
-      author: r.authorAttribution?.displayName,
-      rating: r.rating,
-      when: r.relativePublishTimeDescription,
-      review: (text(r.text) ?? '').slice(0, 600),
-    }));
+    const rows = reviewRows(p, 600);
     return tableResult(
       `${text(p.displayName) ?? args.placeId}: rating ${p.rating ?? 'n/a'} from ${p.userRatingCount ?? 0} reviews`,
       rows,
@@ -387,7 +438,7 @@ export const placesGetPhoto = defineTool({
   name: 'places_get_photo',
   title: 'Get place photo URL',
   description:
-    'Turns a photoName from places_get_place (like "places/ChIJ…/photos/AUy1…") into an image URL. The URL is a Google image link and does not contain the server\'s API key. Each call is billed by Google.',
+    'Turns a photoName from places_get_place or a "full" search (like "places/ChIJ…/photos/AUy1…") into an image URL. The URL is a Google image link and does not contain the server\'s API key. Each call is billed by Google.',
   access: 'read',
   toolset: 'places',
   inputSchema: {

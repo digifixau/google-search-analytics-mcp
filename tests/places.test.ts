@@ -113,6 +113,110 @@ describe('places tools', () => {
     expect(out).toContain('pageToken "next-1"');
   });
 
+  it('returns details and photo references for every result from one full search', async () => {
+    const richPlace = {
+      ...coldCo,
+      editorialSummary: { text: 'Fridge specialists.' },
+      delivery: false,
+      regularOpeningHours: { weekdayDescriptions: ['Monday: 8:00 AM – 5:00 PM'] },
+      photos: [1, 2, 3, 4, 5].map((n) => ({
+        name: `places/${PLACE_ID}/photos/P${n}`,
+        widthPx: 4000,
+        heightPx: 3000,
+      })),
+      reviews: [
+        {
+          rating: 5,
+          relativePublishTimeDescription: 'a month ago',
+          authorAttribution: { displayName: 'Sam' },
+          text: { text: 'x'.repeat(500) },
+        },
+      ],
+    };
+    const searchText = vi.fn().mockResolvedValue({ data: { places: [richPlace] } });
+    const searchNearby = vi.fn().mockResolvedValue({ data: { places: [richPlace] } });
+    const { client } = await connectClient(
+      testConfig(),
+      READ,
+      apisWith({ places: { searchText, searchNearby } }),
+      'places',
+    );
+
+    // Default: details and photo references, but no reviews and no reviews field requested.
+    const out = text(
+      await client.callTool({
+        name: 'places_search_text',
+        arguments: { query: 'fridge repair Melbourne', detail: 'full', maxResults: 5 },
+      }),
+    );
+    expect(searchText.mock.calls[0]![1].headers['X-Goog-FieldMask']).toBe(
+      fieldMask('full', 'places.', ['nextPageToken']),
+    );
+    const parsed = JSON.parse(/```json\n([\s\S]*)\n```/.exec(out)![1]!) as {
+      places: Array<Record<string, unknown> & { photos: Array<{ photoName: string }> }>;
+    };
+    expect(parsed.places).toHaveLength(1);
+    expect(parsed.places[0]).toMatchObject({
+      placeId: PLACE_ID,
+      name: 'Cold Co Refrigeration',
+      summary: 'Fridge specialists.',
+      openingHours: ['Monday: 8:00 AM – 5:00 PM'],
+      rating: 4.8,
+    });
+    expect(parsed.places[0]!.photos.map((p) => p.photoName)).toEqual([
+      `places/${PLACE_ID}/photos/P1`,
+      `places/${PLACE_ID}/photos/P2`,
+      `places/${PLACE_ID}/photos/P3`,
+    ]);
+    expect(parsed.places[0]!.reviews).toBeUndefined();
+    expect(out).toContain('each photo is a separate billed call');
+
+    // includeReviews adds the reviews field to the same request and trims the text.
+    const withReviews = text(
+      await client.callTool({
+        name: 'places_search_text',
+        arguments: { query: 'fridge repair', detail: 'full', includeReviews: true },
+      }),
+    );
+    expect(searchText.mock.calls[1]![1].headers['X-Goog-FieldMask']).toBe(
+      fieldMask('full', 'places.', ['nextPageToken', 'places.reviews']),
+    );
+    const reviewed = JSON.parse(/```json\n([\s\S]*)\n```/.exec(withReviews)![1]!) as {
+      places: Array<{ reviews: Array<{ author: string; review: string }> }>;
+    };
+    expect(reviewed.places[0]!.reviews[0]).toMatchObject({ author: 'Sam' });
+    expect(reviewed.places[0]!.reviews[0]!.review).toHaveLength(300);
+
+    // Below "full", includeReviews is ignored and the output is still a table.
+    const standard = text(
+      await client.callTool({
+        name: 'places_search_text',
+        arguments: { query: 'fridge repair', includeReviews: true },
+      }),
+    );
+    expect(searchText.mock.calls[2]![1].headers['X-Goog-FieldMask']).not.toContain('reviews');
+    expect(standard).toContain('| placeId | name |');
+
+    // Nearby search behaves the same.
+    const nearby = text(
+      await client.callTool({
+        name: 'places_search_nearby',
+        arguments: {
+          latitude: -37.8,
+          longitude: 144.9,
+          radiusMeters: 2000,
+          detail: 'full',
+          includeReviews: true,
+        },
+      }),
+    );
+    expect(searchNearby.mock.calls[0]![1].headers['X-Goog-FieldMask']).toBe(
+      fieldMask('full', 'places.', ['places.reviews']),
+    );
+    expect(nearby).toContain('"photoName"');
+    expect(nearby).toContain('Sam');
+  });
+
   it('requires the three location fields together and caps results', async () => {
     const searchText = vi.fn().mockResolvedValue({ data: {} });
     const { client } = await connectClient(

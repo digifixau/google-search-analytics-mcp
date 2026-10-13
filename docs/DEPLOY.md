@@ -227,7 +227,7 @@ Repeat for each MCP. Every connector is approved on its own, so read/write can d
 
   This runs `merchant_register_gcp_project` once. Afterwards the connection can be read-only if you prefer.
 
-- **Places:** nothing to connect on `/setup`. Places is read-only and every call is billed by Google, so keep the quota cap from step 2.3 in place. Ask for the cheapest detail level that answers the question ("basic" for lists of places, "full" only for one place at a time).
+- **Places:** nothing to connect on `/setup`. Places is read-only and every request is billed by Google, so keep the quota cap from step 2.3 in place. Google gives each billed item its own free monthly allowance (about 1,000 free for the detail-rich search and photo items, 5,000 for the cheapest search item; check Google's pricing page, as prices change). The cheapest way to research several places is **one search with detail "full"** (details and photo references for every result in one request; add `includeReviews` for reviews), then fetch only the photos you need. For example, 10 runs a day of "5 places in a suburb, with details and 1 photo each" is about 300 searches (inside the free allowance) plus 1,500 photos (1,000 free), roughly $3.50 a month. Doing a search and then a details call per place costs roughly $16 a month, and about $54 if you also fetch reviews per place.
 
 ## 6. Check it works
 
