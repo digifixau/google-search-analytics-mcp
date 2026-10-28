@@ -5,7 +5,7 @@ import type { GoogleApisProvider } from '../google/clients.js';
 import type { AuditLog } from '../store/db.js';
 import { allTools } from '../tools/index.js';
 import { isToolEnabled, serviceOf, type ToolContext, type ToolDef } from '../tools/registry.js';
-import { describeError } from '../util/errors.js';
+import { describeError, isRevokedGoogleToken } from '../util/errors.js';
 import type { AccessPolicy } from '../util/policy.js';
 import { CONNECTORS, connectorInstructions, type ConnectorDef } from './connectors.js';
 
@@ -19,6 +19,8 @@ export interface ServerDeps {
   policy: AccessPolicy;
   audit: AuditLog;
   tools?: ToolDef[];
+  /** Called when Google refuses an MCP's stored refresh token, so /setup can flag that connection. */
+  onGoogleTokenRejected?: (connectionId: string) => void;
 }
 
 export interface Grant {
@@ -82,6 +84,9 @@ export function buildMcpServer(
           }
           return result;
         } catch (error) {
+          if (connector.authKind === 'google' && isRevokedGoogleToken(error)) {
+            deps.onGoogleTokenRejected?.(connector.id);
+          }
           const message = describeError(error);
           if (def.access === 'write') {
             deps.audit.record({

@@ -369,7 +369,7 @@ export async function startHttp(app: AppContext): Promise<void> {
           : 'API key MISSING'
         : !status.connected
           ? 'Google NOT connected'
-          : `Google: ${status.identity ?? 'connected'}${status.migratedFromShared ? ' (shared, from before upgrade)' : ''}${status.missingScopes.length ? ' — missing scopes, reconnect' : ''}`;
+          : `Google: ${status.identity ?? 'connected'}${status.migratedFromShared ? ' (shared, from before upgrade)' : ''}${status.tokenRejectedAt ? ' — token REJECTED by Google, reconnect' : status.missingScopes.length ? ' — missing scopes, reconnect' : ''}`;
     console.error(
       `[gsa-mcp]   ${c.title} MCP: ${connectorUrl(c, app.config.publicUrl!).href} — ${google}`,
     );

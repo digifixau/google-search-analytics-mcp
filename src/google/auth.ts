@@ -33,6 +33,8 @@ const IDENTITY_SCOPES = ['openid', 'email'];
 export const LEGACY_KV_KEY = 'google.oauth';
 const kvKey = (connectionId: string) => `google.oauth.${connectionId}`;
 const disconnectedKey = (connectionId: string) => `google.oauth.${connectionId}.disconnected`;
+/** When Google last refused this connection's refresh token; cleared by reconnecting. */
+const rejectedKey = (connectionId: string) => `google.oauth.${connectionId}.rejected`;
 
 /** The Google OAuth scopes needed for the given services (default: all enabled services). */
 export function requiredGoogleScopes(
@@ -107,6 +109,8 @@ export interface GoogleAuthStatus {
   missingScopes: string[];
   connectedAt?: string;
   migratedFromShared?: boolean;
+  /** Google refused the stored refresh token at this time (expired or revoked): reconnect needed. */
+  tokenRejectedAt?: string;
   allowedEmails: string[];
 }
 
@@ -184,7 +188,23 @@ export class GoogleConnection {
       missingScopes: stored ? missingScopes(this.scopes, stored.scopes) : this.scopes,
       connectedAt: stored?.connectedAt,
       migratedFromShared: stored?.migratedFromShared,
+      tokenRejectedAt: stored ? this.kv.get(rejectedKey(this.id)) : undefined,
     };
+  }
+
+  /**
+   * Records that Google refused this connection's refresh token, so /setup can say so. The token is
+   * kept (nothing is deleted), and other connections are untouched.
+   */
+  markTokenRejected(): void {
+    if (this.mode !== 'oauth' || !this.kv.get(kvKey(this.id))) return;
+    // Drop the cached client so the next call starts from the stored token again.
+    this.client = undefined;
+    if (this.kv.get(rejectedKey(this.id))) return;
+    this.kv.set(rejectedKey(this.id), new Date().toISOString());
+    console.error(
+      `[google] Google refused the saved sign-in of the ${this.title} MCP (expired or revoked): reconnect it on ${this.setupHint()}`,
+    );
   }
 
   /** Returns this connection's authenticated client or throws an actionable error. */
@@ -274,6 +294,7 @@ export class GoogleConnection {
       connectedAt: new Date().toISOString(),
     });
     this.kv.delete(disconnectedKey(this.id));
+    this.kv.delete(rejectedKey(this.id));
     this.client = undefined;
     return this.status();
   }
@@ -285,6 +306,7 @@ export class GoogleConnection {
   disconnect(): void {
     if (this.mode === 'api_key') return;
     this.kv.delete(kvKey(this.id));
+    this.kv.delete(rejectedKey(this.id));
     this.kv.set(disconnectedKey(this.id), new Date().toISOString());
     this.client = undefined;
   }

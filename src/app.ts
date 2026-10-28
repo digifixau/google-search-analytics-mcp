@@ -20,6 +20,8 @@ export interface AppContext {
   apisFor: (connectionId: string) => GoogleApisProvider;
   policy: AccessPolicy;
   audit: AuditLog;
+  /** Flags one MCP's connection when Google refuses its saved sign-in (shown on /setup). */
+  onGoogleTokenRejected: (connectionId: string) => void;
 }
 
 export function createAppContext(config: Config): AppContext {
@@ -49,5 +51,8 @@ export function createAppContext(config: Config): AppContext {
     },
     policy: new AccessPolicy(config),
     audit: new AuditLog(db),
+    onGoogleTokenRejected: (connectionId) => {
+      if (google.has(connectionId)) google.get(connectionId).markTokenRejected();
+    },
   };
 }

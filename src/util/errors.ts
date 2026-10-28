@@ -27,6 +27,25 @@ interface GaxiosLikeError {
   };
 }
 
+/**
+ * True when Google refused the stored refresh token (expired, revoked, or a Workspace re-auth policy).
+ * Google reports this from its token endpoint as `invalid_grant` with a description such as
+ * "Token has been expired or revoked."; nothing but reconnecting fixes it.
+ */
+export function isRevokedGoogleToken(error: unknown): boolean {
+  const e = error as GaxiosLikeError;
+  const data = e?.response?.data;
+  const code = typeof data?.error === 'string' ? data.error : undefined;
+  const text = [code, data?.error_description, e?.message].filter(Boolean).join(' ');
+  return (
+    code === 'invalid_grant' ||
+    /invalid_grant|invalid_rapt|expired or revoked|reauth related error/i.test(text)
+  );
+}
+
+const REVOKED_MESSAGE =
+  "Google no longer accepts this MCP's saved sign-in (the token expired or was revoked). The server owner must open /setup and click Reconnect on this MCP's card (or run `google-auth --connector <id>` for local use). MCPs connected with other Google accounts are not affected. If this happens about every 7 days, the Google OAuth consent screen is still in Testing: publish it, then reconnect.";
+
 /** Turns Google API and internal errors into short, actionable messages for the model and the user. */
 export function describeError(error: unknown): string {
   return redact(describe(error));
@@ -36,6 +55,7 @@ function describe(error: unknown): string {
   if (error instanceof ToolInputError) return `Invalid input: ${error.message}`;
   if (error instanceof AccessDeniedError) return `Access denied by server policy: ${error.message}`;
   if (error instanceof GoogleNotConnectedError) return error.message;
+  if (isRevokedGoogleToken(error)) return REVOKED_MESSAGE;
 
   const e = error as GaxiosLikeError;
   const status =
@@ -73,9 +93,6 @@ function describe(error: unknown): string {
   }
   if (/billing/i.test(googleMessage) && (status === 403 || status === 400)) {
     return `Google Places needs billing enabled on the Google Cloud project: ${googleMessage}`;
-  }
-  if (googleMessage.includes('invalid_grant')) {
-    return "Google rejected this MCP's stored refresh token (revoked or expired). Click Reconnect on this MCP's card on /setup (or run `google-auth --connector <id>`); other MCPs are not affected.";
   }
   switch (status) {
     case 400:

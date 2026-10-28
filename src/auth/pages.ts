@@ -119,6 +119,7 @@ export interface DashboardView {
       missingScopes: string[];
       connectedAt?: string;
       migratedFromShared?: boolean;
+      tokenRejectedAt?: string;
       allowedEmails: string[];
     };
   }>;
@@ -154,9 +155,11 @@ export function dashboardPage(v: DashboardView): string {
         ${g.allowedEmails.length ? `<p class="muted">Allowed: ${g.allowedEmails.map(escapeHtml).join(', ')}</p>` : ''}
         <div class="row">${button('connect', g.connectionId, 'Connect Google', 'primary')}</div>`;
     } else {
-      const status = g.missingScopes.length
-        ? `<p class="err">Connected as ${escapeHtml(g.identity ?? 'unknown account')}, but missing scopes — reconnect:</p><p class="muted">${g.missingScopes.map(escapeHtml).join('<br>')}</p>`
-        : `<p class="ok">Connected as ${escapeHtml(g.identity ?? 'unknown account')}</p>`;
+      const status = g.tokenRejectedAt
+        ? `<p class="err">Google no longer accepts the saved sign-in for ${escapeHtml(g.identity ?? 'this account')} (expired or revoked, first seen ${escapeHtml(g.tokenRejectedAt)}). Click Reconnect.</p><p class="muted">Common causes: the OAuth consent screen is still in Testing (tokens expire after 7 days; publish it), access was removed at myaccount.google.com/permissions, or a Workspace re-authentication policy.</p>`
+        : g.missingScopes.length
+          ? `<p class="err">Connected as ${escapeHtml(g.identity ?? 'unknown account')}, but missing scopes — reconnect:</p><p class="muted">${g.missingScopes.map(escapeHtml).join('<br>')}</p>`
+          : `<p class="ok">Connected as ${escapeHtml(g.identity ?? 'unknown account')}</p>`;
       const shared = g.migratedFromShared
         ? '<p class="muted">Using the shared Google connection from before the upgrade. Reconnect to use a separate account for this MCP.</p>'
         : `<p class="muted">Since ${escapeHtml(g.connectedAt)}</p>`;
